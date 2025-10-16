@@ -1,0 +1,50 @@
+# Gitignore for LaTeX projects (common auxiliary files + LaTeX Workshop)
+# See: https://www.toptal.com/developers/gitignore/api/latex
+
+# LaTeX intermediate files
+*.aux
+*.lof
+*.log
+*.lot
+*.fls
+*.out
+*.toc
+*.fmt
+*.fot
+*.cb
+*.cb2
+*.idx
+*.ilg
+*.ind
+*.synctex.gz
+*.synctex
+*.synctex(busy)
+*.fdb_latexmk
+*.pdfsync
+*.run.xml
+*.xdv
+
+# Presentation/proof related
+*.nav
+*.snm
+*.vrb
+
+# LaTeXmk / build dirs
+_minted*/
+build/
+out/
+latexbuild/
+
+# Biber / BibTeX
+*.bbl
+*.blg
+
+# Misc
+*.auxlock
+.*.swp
+
+# MacOS
+.DS_Store
+
+# VS Code workspace settings that are user-specific (uncomment if desired)
+# .vscode/
