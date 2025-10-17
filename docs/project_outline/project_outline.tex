@@ -23,22 +23,68 @@
 
 % Gantt chart 
 \usepackage{pgfgantt}
-% Compact pgfgantt styling
-\ganttset{
-  % Keep scale consistent across charts
-  x unit=0.12cm, y unit chart=0.50cm,
-  % Fix left label column width to prevent layout shift
-  bar label font=\footnotesize,
-  bar label node/.append style={text width=4.8cm,align=right},
-  milestone label font=\footnotesize,
-  milestone label node/.append style={text width=4.8cm,align=right},
-  group label font=\footnotesize\bfseries,
-  group label node/.append style={text width=4.8cm,align=right},
-  % Visual style
-  bar/.append style={fill=black!15},
-  milestone/.append style={fill=black!40},
-  group/.append style={fill=black!25},
-  progress label text={}
+
+% Define lengths only if not already defined
+\makeatletter
+\@ifundefined{glabelwidth}{\newlength{\glabelwidth}}{}
+\@ifundefined{gchartwidth}{\newlength{\gchartwidth}}{}
+\makeatother
+
+% Fixed label column and macro to recompute chart width per \linewidth
+\setlength{\glabelwidth}{4cm}                         % label column width
+\newcommand{\resetganttwidth}{%
+  \setlength{\gchartwidth}{\dimexpr\linewidth-\glabelwidth\relax}%
+  \ganttset{expand chart=\gchartwidth}%
+}
+\resetganttwidth
+
+\newcount\ganttweekstart
+\newcount\ganttweekend
+\newcommand{\weekspanlabel}[2]{%
+  \pgfcalendardatetojulian{#1}{\ganttweekstart}%
+  \pgfcalendardatetojulian{#2}{\ganttweekend}%
+  \advance\ganttweekend by -\ganttweekstart
+  \advance\ganttweekend by 1\relax
+  \gantttitle{Week}{\the\ganttweekend}%
+}
+\pdfstringdefDisableCommands{%
+  \def\weekspanlabel#1#2{Week}%
+  \def\({}%
+  \def\){}%
+  \def\leftrightarrow{<->}%
+}
+
+% Colours
+\definecolor{S2}{HTML}{6D28D9}   % Semester 2 accent
+\definecolor{POST}{HTML}{6D28D9} % Post-S2 tint
+\definecolor{MS}{HTML}{D97706}   % Milestone colour
+
+% Week labels "W1 W2 …"
+\ganttset{calendar week text=\currentweek}
+
+% Global pgfgantt style  (note % at EOL to avoid linebreak issues)
+\ganttset{%
+  expand chart=\gchartwidth,%
+  y unit title=0.70cm,%
+  y unit chart=0.50cm,%
+  % Left label column (fixed width -> identical left edge across charts)
+  bar label font=\footnotesize,%
+  milestone label font=\footnotesize\bfseries,%
+  group label font=\footnotesize\bfseries,%
+  bar label node/.append style={text width=\glabelwidth,align=right},%
+  milestone label node/.append style={text width=\glabelwidth,align=right},%
+  group label node/.append style={text width=\glabelwidth,align=right},%
+  % Draw only weekly vertical rules (hide 6 day rules, draw the 7th)
+  vgrid={*6{draw=none},*1{draw=black!28}},%
+  hgrid=false,%
+  % Make milestones pop
+  milestone/.append style={fill=MS,draw=MS,line width=0.9pt},%
+  milestone height=.85,%
+  % Neutral bars + slim title banners
+  bar/.append style={fill=black!12},%
+  group/.append style={fill=black!25},%
+  title/.append style={draw=none,fill=black!6},%
+  progress label text={},%
 }
 
 % Metadata
@@ -51,100 +97,119 @@
 \vspace{-1.2em}
 
 \section{Background}
-Wheeled Robots struggle over complex terrain where Legged Robots thrive. My prior work includes an Arduino-based hexapod that already has an existing bespoke simulation that makes use of Inverse Kinematics and a dedicated walking algorithm. It used cheap servo motors and off the shelf microcontroller boards. This project aims to develop a smaller Hexapod Robot with custom designed PCBs, closed-loop position control, a Battery Management System and an improved walking algorithm that takes terrain into account and has path planning.
+Wheeled Robots struggle over complex terrain where Legged Robots thrive. I aim to develop my skills in Legged Robotics by building on my prior work on an Arduino-based hexapod. While a good start it had no battery charging circuitry and it used cheap servo motors with off the shelf microcontroller boards. This project aims to develop a smaller Hexapod Robot with custom designed PCBs, closed-loop position control of joints, a dedicated Battery Management System and an improved walking algorithm that takes terrain into account and has path planning. I've also already made a bespoke simulation that makes use of Inverse Kinematics and a custom walking algorithm and plan to carry that over into this project.
 
 The project will start by performing tests on a single servo motor, modifying it to provide closed-loop position control. Then I will develop a terrain generator and path planner in simulation to improve the robot's ability to navigate rough terrain. Finally, I will design a battery management system to allow for untethered operation and integrate all components into a final demonstration.
 
 \section{Overall Aim}
-Design and validate a hexapod platform (simulation $\rightarrow$ hardware) capable of stable locomotion over parameterised rough terrain, with closed-loop servos and an integrated battery system.
+To deliver a hexapod robotics stack that will bridge simulation and hardware: (i) a closed-loop servo module, (ii) a terrain suite for parameterised rough terrain, and (iii) a safe, rechargeable 2-cell battery subsystem. The project should culminate in a demonstration of behaviours developed in simulation through a single-leg rig and eventually a full chassis. A path planner may also be explored as a stretch objective, but the core focus is on these deliverables and their evidence. 
 
-\section{Objectives (Milestones)}
+
+\section{Objectives (Assessable Deliverables)}
 \begin{enumerate}[nosep,label=\textbf{O\arabic*}]
-  \item Closed-Loop SG90-class Servo: sensorised angle readout (I\textsuperscript{2}C), PID with low-pass filtering; robustness exploration (e.g., sliding mode).
-  \item Terrain System: noise-based heightmaps; difficulty parameters (slope, roughness, obstacles, step height, friction).
-  \item Path Planning: planner operating on generated terrain; simulation rollout and evaluation metrics.
-  \item Battery Management: 2S 18650 pack with protection, balancing, and USB-C charging.
-  \item Integration Demo: simulation results + hardware bench test on representative obstacles.
+  \item Closed-Loop Servo (STM32) - bench-validated tracking on a single-leg rig; steady-state accuracy and settling time within thresholds suitable for a stable gait. Final numeric targets will be set after initial bring-up and tests and recorded in the logbook.
+  \item Reproducible Terrain \& Benchmark Suite - parameterised terrains with a system to report success, slip, and stability metrics on fixed scenarios. Any performance thresholds will be fixed after the first simulation experiments.
+  \item Path Planner (stretch) - scope and acceptance criteria defined after further research.
+  \item 2S Battery System (USB-C PD, Charger, Protection, Balancing) - PD negotiation demonstrated; charger operation validated; primary protection trips; balancing limits inter-cell drift within an agreed tolerance. Exact tolerances will be aligned to datasheets and set following initial charge/discharge tests.
+  \item Integration Demo (Sim \(\leftrightarrow\) Hardware) - comparable behaviour between simulator outputs and hardware (single-leg then full chassis) on a defined mini-suite of tasks. Criteria to be set when servo and terrain baselines are established.
 \end{enumerate}
 
-\section{Provisional Project Plan}
+% --- Shared widths & colours for both charts ---
+% \newlength{\glabelwidth}
+\setlength{\glabelwidth}{4cm} % left label column (same for both charts)
+\resetganttwidth
 
-\subsection*{Task Descriptions (brief)}
-\textbf{Closed-Loop Servo (STM32):} modify an SG90-class servo for position feedback and run a simple PID loop on an STM32 board. Bench test step tracking and basic disturbance rejection on a small rig. Aim for “works reliably” rather than perfect control theory. \\
-\textbf{Terrain (C++):} build a simple heightmap generator in C++ with adjustable difficulty (slope, roughness, steps, friction). Use a few fixed seeds and basic metrics (success rate, slip, stability score) to compare controller settings. \\
-\textbf{Planner (TBD):} keep researching options (grid/gait/footstep vs. simple heuristics). No committed deliverable yet - this bar is tentative. \\
-\textbf{Battery Management (2S):} four steps: (1) choose USB-C PD controller and prove negotiation from a charger; (2) prototype a buck-boost multi-cell charger for a 2-cell Li-ion pack; (3) validate a primary protection IC for over-voltage/under-voltage/over-current cut-off; (4) add secondary protection/balancing so series cells stay equalised. \\
-\textbf{Integration:} start with a single-leg test rig linked to the simulator, then assemble the full chassis (six legs) with the BMS and central controller for the demo. Logbook kept throughout.
+\definecolor{S1}{HTML}{0E7490}      % teal-ish
+\definecolor{S2}{HTML}{6D28D9}      % purple-ish
+\definecolor{Post}{HTML}{6D28D9}    % reuse S2 hue
+\definecolor{MS}{HTML}{D97706}      % milestone colour (amber)
+
+% Week labels: "W1 W2 …"
+
+
+
+% \section{Provisional Project Plan}
 
 \begin{center}
-% -------------------- Semester 1 --------------------
-\begin{ganttchart}[
-    hgrid,vgrid,
-    time slot unit=day,
-    time slot format=isodate,
-    calendar week text={W\currentweek}
-]{2025-09-29}{2025-12-12}
-  \gantttitlecalendar{month=shortname, week} \\
+\begin{minipage}{\linewidth}
+\centering
 
-  % Reviews & fixed dates
-  \ganttmilestone{Proposal \& Risk due}{2025-10-17} \\
-  \ganttmilestone{Start work}{2025-10-20} \\
+% SEMESTER 1 
+\medskip
+\makebox[\linewidth]{\Large\bfseries Semester 1 (Weeks 4–12)}
+\resetganttwidth
+\begin{ganttchart}[
+  time slot unit=day,
+  time slot format=isodate
+]{2025-10-20}{2025-12-21} % Monday W4 -> Sunday end of W12
+
+  % Title row 1: months (aligned to chart span)
+  \gantttitlecalendar*{2025-10-20}{2025-12-21}{month=shortname} \\
+  % Title row 2: week numbers (W4–W12 span)
+  \weekspanlabel{2025-10-20}{2025-12-21} \\
+  \gantttitlecalendar*{2025-10-20}{2025-12-21}{week=4} \\
+
+  % Milestones tied to Semester 1
   \ganttmilestone{PRM1}{2025-10-27} \\
   \ganttmilestone{PRM2}{2025-11-24} \\
+  \ganttmilestone{Draft Intro (2pm)}{2025-12-12} \\
 
-  % Terrain (C++)
-  \ganttgroup{Terrain (C++)}{2025-10-20}{2025-11-28} \\
-  \ganttbar{Heightmaps \& params}{2025-10-20}{2025-11-08} \\
-  \ganttbar{Metrics \& tests}{2025-10-27}{2025-11-28} \\
-  \ganttmilestone{Terrain OK}{2025-11-28} \\
+  % Servo-focused kick-off (Weeks 4–6)
+  \ganttgroup{Servo}{2025-10-20}{2025-11-09} \\
+  \ganttbar{Hardware mods \& sensing}{2025-10-20}{2025-10-31} \\
+  \ganttbar{Control loop tuning}{2025-10-29}{2025-11-09} \\
+  \ganttmilestone{Servo demo ready}{2025-11-08} \\
 
-  % Closed-loop Servo (STM32)
-  \ganttgroup{Closed-loop Servo (STM32)}{2025-10-27}{2025-12-12} \\
-  \ganttbar{HW mod \& bring-up}{2025-10-27}{2025-11-14} \\
-  \ganttbar{PID tune \& filters}{2025-11-10}{2025-12-05} \\
-  \ganttmilestone{Servo demo}{2025-12-12} \\
+  % Simulation brought in line (Weeks 7–9)
+  \ganttgroup{Simulation Alignment}{2025-11-10}{2025-11-30} \\
+  \ganttbar{Refactor}{2025-11-10}{2025-11-20} \\
+  \ganttbar{Hardware \(\leftrightarrow\) sim bridge}{2025-11-18}{2025-11-30} \\
+  \ganttmilestone{Sim bridge OK}{2025-11-29} \\
 
-  % Planner (TBD) - greyed out placeholder
-  \ganttbar[bar/.append style={fill=gray!30}]{Planner (TBD)}{2025-11-10}{2025-12-12} \\
-
-  % Battery Management (2S) milestones
-  \ganttgroup{Battery Mgmt (2S)}{2025-11-03}{2025-12-12} \\
-  \ganttbar{USB-C PD chosen}{2025-11-03}{2025-11-07} \\
-  \ganttmilestone{PD negotiate proto}{2025-11-07} \\
-  \ganttbar{Buck-boost charger proto}{2025-11-07}{2025-11-21} \\
-  \ganttmilestone{Charger proto OK}{2025-11-21} \\
-  \ganttbar{Primary protection test}{2025-11-17}{2025-12-02} \\
-  \ganttmilestone{Primary prot OK}{2025-12-02} \\
-  \ganttbar{Balancer integrate}{2025-12-02}{2025-12-12} \\
-  \ganttmilestone{Balancing OK}{2025-12-12}
+  % Terrain generator push (Weeks 10–12)
+  \ganttgroup{Terrain Generator}{2025-12-01}{2025-12-21} \\
+  \ganttbar{Heightmap pipeline}{2025-12-01}{2025-12-12} \\
+  \ganttbar{Metrics \& validation}{2025-12-08}{2025-12-21} \\
+  \ganttmilestone{Terrain demo?}{2025-12-20}
 \end{ganttchart}
 
-% -------------------- Semester 2 --------------------
-\vspace{0.6em}
+% SEMESTER 2
+\medskip
+\makebox[\linewidth]{\Large\bfseries Semester 2 (Weeks 1–12)}
+\resetganttwidth
 \begin{ganttchart}[
-    hgrid,vgrid,
-    time slot unit=day,
-    time slot format=isodate,
-    calendar week text={W\currentweek}
-]{2026-02-02}{2026-05-15}
-  \gantttitlecalendar{month=shortname, week} \\
+  time slot unit=day,
+  time slot format=isodate,
+  title/.append style={fill=S2!10} % S2 header tint
+]{2026-02-02}{2026-05-17} % W1 Monday -> Sunday after W15
+
+  \gantttitlecalendar{month=shortname} \\
+  % Show W1..W12
+  \weekspanlabel{2026-02-02}{2026-04-26} \\
+  \gantttitlecalendar*{2026-02-02}{2026-04-26}{week=1} \\
 
   % Reviews & deliverables
   \ganttmilestone{PRM3}{2026-02-16} \\
   \ganttmilestone{Draft Final Report}{2026-03-13} \\
   \ganttmilestone{PRM4}{2026-03-16} \\
-  \ganttmilestone{Final Report due}{2026-05-01} \\
+  \ganttmilestone{Final Report}{2026-05-01} \\
 
-  % Integration activities
-  \ganttgroup{Integration}{2026-02-03}{2026-05-15} \\
-  \ganttbar{Single leg + sim bridge}{2026-02-03}{2026-03-06} \\
-  \ganttbar{Full chassis + BMS}{2026-03-09}{2026-04-24} \\
-  \ganttbar{Demo prep \& dry runs}{2026-04-27}{2026-05-04} \\
+  % Battery management boot-up (Weeks 1–3)
+  \ganttgroup{Battery Mgmt}{2026-02-02}{2026-02-23} \\
+  \ganttbar{PD negotiation \& charger}{2026-02-02}{2026-02-16} \\
+  \ganttbar{Protection \& balancing tests}{2026-02-09}{2026-02-23} \\
+  \ganttmilestone{Battery Ready}{2026-02-23} \\
 
-  % Final demo window
-  \ganttbar{Final Demo window}{2026-05-05}{2026-05-15} \\
+  % Integration thrust (Weeks 4–15)
+  \ganttgroup{Integration}{2026-02-23}{2026-05-17} \\
+  \ganttbar{Single leg validation}{2026-02-23}{2026-03-15} \\
+  \ganttbar{Full chassis + BMS}{2026-03-16}{2026-04-12} \\
+  \ganttbar{System tuning \& trials}{2026-04-06}{2026-05-04} \\
+  \ganttbar{Demo prep \& window}{2026-05-05}{2026-05-17} \\
   \ganttmilestone{Final Demo}{2026-05-15}
 \end{ganttchart}
+
+\end{minipage}
 \end{center}
 
 \end{document}
