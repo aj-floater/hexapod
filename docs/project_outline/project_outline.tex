@@ -59,14 +59,13 @@
 \definecolor{POST}{HTML}{6D28D9} % Post-S2 tint
 \definecolor{MS}{HTML}{D97706}   % Milestone colour
 
-% Week labels "W1 W2 …"
 \ganttset{calendar week text=\currentweek}
 
 % Global pgfgantt style  (note % at EOL to avoid linebreak issues)
 \ganttset{%
   expand chart=\gchartwidth,%
   y unit title=0.70cm,%
-  y unit chart=0.50cm,%
+  y unit chart=0.48cm,%
   % Left label column (fixed width -> identical left edge across charts)
   bar label font=\footnotesize,%
   milestone label font=\footnotesize\bfseries,%
@@ -82,8 +81,10 @@
   milestone height=.85,%
   % Neutral bars + slim title banners
   bar/.append style={fill=black!12},%
-  group/.append style={fill=black!25},%
-  title/.append style={draw=none,fill=black!6},%
+  group/.append style={fill=S1!35,draw=S1!80},%
+  group top shift=0.15,%
+  group height=0.50,%
+  title/.append style={draw=black!35,fill=black!6,line width=0.3pt},%
   progress label text={},%
 }
 
@@ -102,7 +103,7 @@ Wheeled Robots struggle over complex terrain where Legged Robots thrive. I aim t
 The project will start by performing tests on a single servo motor, modifying it to provide closed-loop position control. Then I will develop a terrain generator and path planner in simulation to improve the robot's ability to navigate rough terrain. Finally, I will design a battery management system to allow for untethered operation and integrate all components into a final demonstration.
 
 \section{Overall Aim}
-To deliver a hexapod robotics stack that will bridge simulation and hardware: (i) a closed-loop servo module, (ii) a terrain suite for parameterised rough terrain, and (iii) a safe, rechargeable 2-cell battery subsystem. The project should culminate in a demonstration of behaviours developed in simulation through a single-leg rig and eventually a full chassis. A path planner may also be explored as a stretch objective, but the core focus is on these deliverables and their evidence. 
+To deliver a hexapod robotics stack that will bridge simulation and hardware: (i) a closed-loop servo module, (ii) a terrain suite for parameterised rough terrain, and (iii) a safe, rechargeable 2-cell battery subsystem. The project should result in a single-leg rig and eventually a full chassis that demonstrate behaviours developed in simulation. A path planner may also be explored as a stretch objective, but the core focus is on these deliverables and their evidence.
 
 
 \section{Objectives (Assessable Deliverables)}
@@ -136,7 +137,7 @@ To deliver a hexapod robotics stack that will bridge simulation and hardware: (i
 
 % SEMESTER 1 
 \medskip
-\makebox[\linewidth]{\Large\bfseries Semester 1 (Weeks 4–12)}
+\makebox[\linewidth]{\Large\bfseries Semester 1 (Weeks 4-12)}
 \resetganttwidth
 \begin{ganttchart}[
   time slot unit=day,
@@ -144,29 +145,42 @@ To deliver a hexapod robotics stack that will bridge simulation and hardware: (i
 ]{2025-10-20}{2025-12-21} % Monday W4 -> Sunday end of W12
 
   % Title row 1: months (aligned to chart span)
-  \gantttitlecalendar*{2025-10-20}{2025-12-21}{month=shortname} \\
-  % Title row 2: week numbers (W4–W12 span)
+  \gantttitlecalendar*[
+    title list options={
+      title/.append style={draw=black!45,line width=0.35pt,fill=black!6},
+      title label node/.append style={inner sep=1.2pt}
+    }
+  ]{2025-10-20}{2025-12-21}{month=shortname} \\
   \weekspanlabel{2025-10-20}{2025-12-21} \\
-  \gantttitlecalendar*{2025-10-20}{2025-12-21}{week=4} \\
+  % Title row 2: week numbers (W4-W12 span)
+  \gantttitlecalendar*[
+    title list options={
+      title/.append style={draw=black!45,line width=0.35pt,fill=black!6},
+      title label node/.append style={inner sep=1.2pt}
+    }
+  ]{2025-10-20}{2025-12-21}{week=4} \\
 
   % Milestones tied to Semester 1
   \ganttmilestone{PRM1}{2025-10-27} \\
   \ganttmilestone{PRM2}{2025-11-24} \\
   \ganttmilestone{Draft Intro (2pm)}{2025-12-12} \\
 
-  % Servo-focused kick-off (Weeks 4–6)
+  % Servo-focused kick-off (Weeks 4-6)
+  \ganttnewline
   \ganttgroup{Servo}{2025-10-20}{2025-11-09} \\
   \ganttbar{Hardware mods \& sensing}{2025-10-20}{2025-10-31} \\
   \ganttbar{Control loop tuning}{2025-10-29}{2025-11-09} \\
   \ganttmilestone{Servo demo ready}{2025-11-08} \\
 
-  % Simulation brought in line (Weeks 7–9)
+  % Simulation brought in line (Weeks 7-9)
+  \ganttnewline
   \ganttgroup{Simulation Alignment}{2025-11-10}{2025-11-30} \\
   \ganttbar{Refactor}{2025-11-10}{2025-11-20} \\
   \ganttbar{Hardware \(\leftrightarrow\) sim bridge}{2025-11-18}{2025-11-30} \\
   \ganttmilestone{Sim bridge OK}{2025-11-29} \\
 
-  % Terrain generator push (Weeks 10–12)
+  % Terrain generator push (Weeks 10-12)
+  \ganttnewline
   \ganttgroup{Terrain Generator}{2025-12-01}{2025-12-21} \\
   \ganttbar{Heightmap pipeline}{2025-12-01}{2025-12-12} \\
   \ganttbar{Metrics \& validation}{2025-12-08}{2025-12-21} \\
@@ -175,18 +189,29 @@ To deliver a hexapod robotics stack that will bridge simulation and hardware: (i
 
 % SEMESTER 2
 \medskip
-\makebox[\linewidth]{\Large\bfseries Semester 2 (Weeks 1–12)}
+\makebox[\linewidth]{\Large\bfseries Semester 2 (Weeks 1-12)}
 \resetganttwidth
 \begin{ganttchart}[
   time slot unit=day,
   time slot format=isodate,
-  title/.append style={fill=S2!10} % S2 header tint
+  title/.append style={fill=S2!10}, % S2 header tint
+  group/.append style={fill=S2!30,draw=S2!80}
 ]{2026-02-02}{2026-05-17} % W1 Monday -> Sunday after W15
 
-  \gantttitlecalendar{month=shortname} \\
+  \gantttitlecalendar[
+    title list options={
+      title/.append style={draw=black!45,line width=0.35pt,fill=black!6},
+      title label node/.append style={inner sep=1.2pt}
+    }
+  ]{month=shortname} \\
   % Show W1..W12
   \weekspanlabel{2026-02-02}{2026-04-26} \\
-  \gantttitlecalendar*{2026-02-02}{2026-04-26}{week=1} \\
+  \gantttitlecalendar*[
+    title list options={
+      title/.append style={draw=black!45,line width=0.35pt,fill=black!6},
+      title label node/.append style={inner sep=1.2pt}
+    }
+  ]{2026-02-02}{2026-04-26}{week=1} \\
 
   % Reviews & deliverables
   \ganttmilestone{PRM3}{2026-02-16} \\
@@ -194,13 +219,15 @@ To deliver a hexapod robotics stack that will bridge simulation and hardware: (i
   \ganttmilestone{PRM4}{2026-03-16} \\
   \ganttmilestone{Final Report}{2026-05-01} \\
 
-  % Battery management boot-up (Weeks 1–3)
+  % Battery management boot-up (Weeks 1-3)
+  \ganttnewline
   \ganttgroup{Battery Mgmt}{2026-02-02}{2026-02-23} \\
   \ganttbar{PD negotiation \& charger}{2026-02-02}{2026-02-16} \\
   \ganttbar{Protection \& balancing tests}{2026-02-09}{2026-02-23} \\
   \ganttmilestone{Battery Ready}{2026-02-23} \\
 
-  % Integration thrust (Weeks 4–15)
+  % Integration thrust (Weeks 4-15)
+  \ganttnewline
   \ganttgroup{Integration}{2026-02-23}{2026-05-17} \\
   \ganttbar{Single leg validation}{2026-02-23}{2026-03-15} \\
   \ganttbar{Full chassis + BMS}{2026-03-16}{2026-04-12} \\
