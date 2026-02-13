@@ -1,0 +1,10 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "2171790001")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/2171790001.kicad_sym")(options "")(descr ""))
+  (lib (name "DRV8837DSGR")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/DRV8837DSGR.kicad_sym")(options "")(descr ""))
+  (lib (name "STM32F042F6P6")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/STM32F042F6P6.kicad_sym")(options "")(descr ""))
+  (lib (name "TL431IDBZR,215")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/TL431IDBZR,215.kicad_sym")(options "")(descr ""))
+  (lib (name "MCP1703T-3302E_CB")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/MCP1703T-3302E_CB.kicad_sym")(options "")(descr ""))
+  (lib (name "B5B-PH-K-S_LF__SN_")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/B5B-PH-K-S_LF__SN_.kicad_sym")(options "")(descr ""))
+  (lib (name "B3B-PH-K-S_LF__SN_")(type "KiCad")(uri "${KIPRJMOD}/Libraries/Symbols/B3B-PH-K-S_LF__SN_.kicad_sym")(options "")(descr ""))
+)
