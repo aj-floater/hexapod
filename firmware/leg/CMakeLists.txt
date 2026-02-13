@@ -34,7 +34,11 @@ project(leg C CXX ASM)
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
-add_executable(leg leg.c)
+add_executable(leg
+    leg.c
+    adc_pot.c
+    motor_pwm.c
+)
 
 pico_set_program_name(leg "leg")
 pico_set_program_version(leg "0.1")
@@ -55,6 +59,8 @@ pico_enable_stdio_usb(leg 0)
 target_link_libraries(leg
     pico_stdlib
     hardware_adc
+    hardware_pwm
+    hardware_clocks
     # hardware_i2c
 )
 
