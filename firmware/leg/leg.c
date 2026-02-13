@@ -1,66 +1,197 @@
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+
 #include "pico/stdlib.h"
-#include "hardware/adc.h"
+#include "pico/time.h"
+
+#include "adc_pot.h"
+#include "motor_pwm.h"
 
 // Generated template examples retained for later use:
 // #include "hardware/i2c.h"
 // #include "hardware/uart.h"
 //
 // // I2C defines
-// // This example uses I2C0 on GPIO8 (SDA) and GPIO9 (SCL) at 400kHz.
 // #define I2C_PORT i2c0
 // #define I2C_SDA 8
 // #define I2C_SCL 9
 //
 // // UART defines
-// // By default stdout UART is uart0; template uses uart1 on GPIO4/GPIO5.
 // #define UART_ID uart1
 // #define BAUD_RATE 115200
 // #define UART_TX_PIN 4
 // #define UART_RX_PIN 5
 
-// Potentiometer ADC channels for Serial Plotter streaming.
-#define ADC1_GPIO 27
-#define ADC2_GPIO 28
-#define ADC1_INPUT (ADC1_GPIO - 26)
-#define ADC2_INPUT (ADC2_GPIO - 26)
-#define SAMPLE_DELAY_MS 20
+// Potentiometer ADC mapping (servo angle feedback).
+#define POT_A_GPIO 26
+#define POT_B_GPIO 27
+#define POT_C_GPIO 28
 
-static void init_adc_inputs(void) {
-    adc_init();
-    adc_gpio_init(ADC1_GPIO);
-    adc_gpio_init(ADC2_GPIO);
+// DRV8837 IN1/IN2 mapping.
+#define MOTOR_A_IN1_GPIO 18
+#define MOTOR_A_IN2_GPIO 19
+#define MOTOR_B_IN1_GPIO 12
+#define MOTOR_B_IN2_GPIO 13
+#define MOTOR_C_IN1_GPIO 22
+#define MOTOR_C_IN2_GPIO 23
+
+#define MOTOR_PWM_HZ 20000u
+#define MAX_ON_TIME_MS 600u
+#define TEST_ON_MS 400u
+#define TEST_OFF_MS 1000u
+#define TEST_DUTY_MIN 60u
+#define TEST_DUTY_MAX 100u
+#define TEST_DUTY_STEP 5u
+#define ADC_LOG_PERIOD_MS 20u
+#define RUN_REVERSE_TEST 0
+
+typedef struct {
+    AdcPot a;
+    AdcPot b;
+    AdcPot c;
+} AdcBank;
+
+typedef struct {
+    MotorPwm a;
+    MotorPwm b;
+    MotorPwm c;
+} MotorBank;
+
+typedef enum {
+    MOTOR_PHASE_ON,
+    MOTOR_PHASE_OFF,
+} MotorPhase;
+
+typedef struct {
+    bool reverse;
+    MotorPhase phase;
+    uint8_t duty_current;
+    uint8_t duty_min;
+    uint8_t duty_max;
+    uint8_t duty_step;
+    uint32_t on_ms;
+    uint32_t off_ms;
+    uint8_t telemetry_duty;
+    absolute_time_t phase_deadline;
+} MotorCTestTask;
+
+typedef struct {
+    uint32_t period_ms;
+    absolute_time_t next_sample_at;
+} TelemetryTask;
+
+static void init_adc_bank(AdcBank *bank) {
+    adc_pot_system_init();
+    adc_pot_init(&bank->a, "adc_a", POT_A_GPIO);
+    adc_pot_init(&bank->b, "adc_b", POT_B_GPIO);
+    adc_pot_init(&bank->c, "adc_c", POT_C_GPIO);
+}
+
+static void init_motor_bank(MotorBank *bank) {
+    motor_pwm_init(&bank->a, "motor_a", MOTOR_A_IN1_GPIO, MOTOR_A_IN2_GPIO, MOTOR_PWM_HZ);
+    motor_pwm_init(&bank->b, "motor_b", MOTOR_B_IN1_GPIO, MOTOR_B_IN2_GPIO, MOTOR_PWM_HZ);
+    motor_pwm_init(&bank->c, "motor_c", MOTOR_C_IN1_GPIO, MOTOR_C_IN2_GPIO, MOTOR_PWM_HZ);
+
+    motor_pwm_coast(&bank->a);
+    motor_pwm_coast(&bank->b);
+    motor_pwm_coast(&bank->c);
+}
+
+static void log_adc_plotter(AdcBank *bank, uint8_t duty_step) {
+    uint16_t adc_a = adc_pot_read_raw(&bank->a);
+    uint16_t adc_b = adc_pot_read_raw(&bank->b);
+    uint16_t adc_c = adc_pot_read_raw(&bank->c);
+
+    // VS Code Serial Plotter format.
+    printf(">adc_a_gpio26:%u,adc_b_gpio27:%u,adc_c_gpio28:%u,duty_step:%u\r\n", adc_a, adc_b, adc_c, duty_step);
+}
+
+static uint32_t clamp_on_time_ms(uint32_t on_ms) {
+    if (on_ms > MAX_ON_TIME_MS) {
+        return MAX_ON_TIME_MS;
+    }
+    return on_ms;
+}
+
+static void motor_c_test_task_init(MotorCTestTask *task, bool reverse) {
+    task->reverse = reverse;
+    task->phase = MOTOR_PHASE_ON;
+    task->duty_min = TEST_DUTY_MIN;
+    task->duty_max = TEST_DUTY_MAX;
+    task->duty_step = TEST_DUTY_STEP;
+    task->duty_current = task->duty_min;
+    task->on_ms = clamp_on_time_ms(TEST_ON_MS);
+    task->off_ms = TEST_OFF_MS;
+    task->telemetry_duty = 0u;
+    task->phase_deadline = get_absolute_time();
+}
+
+static void motor_c_test_task_tick(MotorCTestTask *task, MotorBank *motors) {
+    if (!time_reached(task->phase_deadline)) {
+        return;
+    }
+
+    if (task->phase == MOTOR_PHASE_ON) {
+        if (task->reverse) {
+            motor_pwm_set_reverse_duty(&motors->c, task->duty_current);
+        } else {
+            motor_pwm_set_forward_duty(&motors->c, task->duty_current);
+        }
+
+        task->telemetry_duty = task->duty_current;
+        task->phase = MOTOR_PHASE_OFF;
+        task->phase_deadline = make_timeout_time_ms(task->on_ms);
+        return;
+    }
+
+    motor_pwm_coast(&motors->c);
+    task->telemetry_duty = 0u;
+
+    if ((uint16_t)task->duty_current + (uint16_t)task->duty_step <= (uint16_t)task->duty_max) {
+        task->duty_current = (uint8_t)(task->duty_current + task->duty_step);
+    } else {
+        task->duty_current = task->duty_min;
+    }
+
+    task->phase = MOTOR_PHASE_ON;
+    task->phase_deadline = make_timeout_time_ms(task->off_ms);
+}
+
+static void telemetry_task_init(TelemetryTask *task, uint32_t period_ms) {
+    task->period_ms = period_ms;
+    task->next_sample_at = get_absolute_time();
+}
+
+static void telemetry_task_tick(TelemetryTask *task, AdcBank *adc_bank, uint8_t duty_step) {
+    if (!time_reached(task->next_sample_at)) {
+        return;
+    }
+
+    log_adc_plotter(adc_bank, duty_step);
+    task->next_sample_at = make_timeout_time_ms(task->period_ms);
 }
 
 int main(void) {
-    stdio_init_all();
-    init_adc_inputs();
+    AdcBank adc_bank;
+    MotorBank motor_bank;
+    MotorCTestTask motor_c_task;
+    TelemetryTask telemetry_task;
 
-    // Generated template examples retained but disabled.
-    // #if 0
-    // // I2C initialisation at 400kHz.
-    // i2c_init(I2C_PORT, 400 * 1000);
-    // gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    // gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    // gpio_pull_up(I2C_SDA);
-    // gpio_pull_up(I2C_SCL);
-    //
-    // // UART1 initialisation on GPIO4/GPIO5.
-    // uart_init(UART_ID, BAUD_RATE);
-    // gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    // gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    // uart_puts(UART_ID, "Hello, UART!\\n");
-    // #endif
+    stdio_init_all();
+    init_adc_bank(&adc_bank);
+    init_motor_bank(&motor_bank);
+
+#if RUN_REVERSE_TEST
+    motor_c_test_task_init(&motor_c_task, true);
+#else
+    motor_c_test_task_init(&motor_c_task, false);
+#endif
+    telemetry_task_init(&telemetry_task, ADC_LOG_PERIOD_MS);
 
     while (true) {
-        adc_select_input(ADC1_INPUT);
-        uint16_t adc1_raw = adc_read();
-
-        adc_select_input(ADC2_INPUT);
-        uint16_t adc2_raw = adc_read();
-
-        // VS Code Serial Plotter format: >name:value,name:value\r\n
-        printf(">adc1_gpio27:%u,adc2_gpio28:%u\r\n", adc1_raw, adc2_raw);
-        sleep_ms(SAMPLE_DELAY_MS);
+        motor_c_test_task_tick(&motor_c_task, &motor_bank);
+        telemetry_task_tick(&telemetry_task, &adc_bank, motor_c_task.telemetry_duty);
+        tight_loop_contents();
     }
 }
