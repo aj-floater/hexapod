@@ -58,6 +58,7 @@ pico_enable_stdio_usb(leg 0)
 # Add requested libraries.
 target_link_libraries(leg
     pico_stdlib
+    pico_multicore
     hardware_adc
     hardware_pwm
     hardware_clocks
