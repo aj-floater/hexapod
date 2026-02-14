@@ -2,8 +2,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "pico/multicore.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "pico/util/queue.h"
 
 #include "adc_pot.h"
 #include "motor_pwm.h"
@@ -44,6 +46,7 @@
 #define TEST_DUTY_MAX 100u
 #define TEST_DUTY_STEP 5u
 #define ADC_LOG_PERIOD_MS 20u
+#define TELEMETRY_QUEUE_DEPTH 64u
 #define RUN_REVERSE_TEST 0
 
 typedef struct {
@@ -81,6 +84,18 @@ typedef struct {
     absolute_time_t next_sample_at;
 } TelemetryTask;
 
+typedef struct {
+    uint16_t adc_a;
+    uint16_t adc_b;
+    uint16_t adc_c;
+    uint8_t duty_step;
+    uint64_t time_us;
+} TelemetrySample;
+
+static AdcBank g_adc_bank;
+static MotorBank g_motor_bank;
+static queue_t g_telemetry_queue;
+
 static void init_adc_bank(AdcBank *bank) {
     adc_pot_system_init();
     adc_pot_init(&bank->a, "adc_a", POT_A_GPIO);
@@ -96,15 +111,6 @@ static void init_motor_bank(MotorBank *bank) {
     motor_pwm_coast(&bank->a);
     motor_pwm_coast(&bank->b);
     motor_pwm_coast(&bank->c);
-}
-
-static void log_adc_plotter(AdcBank *bank, uint8_t duty_step) {
-    uint16_t adc_a = adc_pot_read_raw(&bank->a);
-    uint16_t adc_b = adc_pot_read_raw(&bank->b);
-    uint16_t adc_c = adc_pot_read_raw(&bank->c);
-
-    // VS Code Serial Plotter format.
-    printf(">adc_a_gpio26:%u,adc_b_gpio27:%u,adc_c_gpio28:%u,duty_step:%u\r\n", adc_a, adc_b, adc_c, duty_step);
 }
 
 static uint32_t clamp_on_time_ms(uint32_t on_ms) {
@@ -168,19 +174,22 @@ static void telemetry_task_tick(TelemetryTask *task, AdcBank *adc_bank, uint8_t 
         return;
     }
 
-    log_adc_plotter(adc_bank, duty_step);
+    TelemetrySample sample;
+    sample.adc_a = adc_pot_read_raw(&adc_bank->a);
+    sample.adc_b = adc_pot_read_raw(&adc_bank->b);
+    sample.adc_c = adc_pot_read_raw(&adc_bank->c);
+    sample.duty_step = duty_step;
+    sample.time_us = time_us_64();
+
+    // Control loop never blocks on telemetry I/O.
+    (void)queue_try_add(&g_telemetry_queue, &sample);
+
     task->next_sample_at = make_timeout_time_ms(task->period_ms);
 }
 
-int main(void) {
-    AdcBank adc_bank;
-    MotorBank motor_bank;
+static void core1_control_main(void) {
     MotorCTestTask motor_c_task;
     TelemetryTask telemetry_task;
-
-    stdio_init_all();
-    init_adc_bank(&adc_bank);
-    init_motor_bank(&motor_bank);
 
 #if RUN_REVERSE_TEST
     motor_c_test_task_init(&motor_c_task, true);
@@ -190,8 +199,32 @@ int main(void) {
     telemetry_task_init(&telemetry_task, ADC_LOG_PERIOD_MS);
 
     while (true) {
-        motor_c_test_task_tick(&motor_c_task, &motor_bank);
-        telemetry_task_tick(&telemetry_task, &adc_bank, motor_c_task.telemetry_duty);
+        motor_c_test_task_tick(&motor_c_task, &g_motor_bank);
+        telemetry_task_tick(&telemetry_task, &g_adc_bank, motor_c_task.telemetry_duty);
         tight_loop_contents();
+    }
+}
+
+int main(void) {
+    stdio_init_all();
+    init_adc_bank(&g_adc_bank);
+    init_motor_bank(&g_motor_bank);
+    queue_init(&g_telemetry_queue, sizeof(TelemetrySample), TELEMETRY_QUEUE_DEPTH);
+
+    multicore_launch_core1(core1_control_main);
+
+    while (true) {
+        TelemetrySample sample;
+        queue_remove_blocking(&g_telemetry_queue, &sample);
+
+        // VS Code Serial Plotter format.
+        printf(
+            ">adc_a_gpio26:%u,adc_b_gpio27:%u,adc_c_gpio28:%u,duty_step:%u,time_us:%llu\r\n",
+            sample.adc_a,
+            sample.adc_b,
+            sample.adc_c,
+            sample.duty_step,
+            (unsigned long long)sample.time_us
+        );
     }
 }
