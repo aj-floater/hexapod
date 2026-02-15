@@ -21,7 +21,7 @@ bi_decl(bi_ptr_int32(0x1111, 0, LED_TYPE, 0));
 bi_decl(bi_ptr_int32(0x1111, 0, LED_PIN, 25));
 
 #ifndef LED_DELAY_MS
-#define LED_DELAY_MS 250
+#define LED_DELAY_MS 50
 #endif
 
 // Perform initialisation
