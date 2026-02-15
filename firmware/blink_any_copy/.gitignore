@@ -1,2 +1,4 @@
 build
+build-blink_any_copy
+.nvimlog
 !.vscode/*
