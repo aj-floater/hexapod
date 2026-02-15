@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "RP2040 (nvim-dap gdb)",
+      "type": "gdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/build-blink_any_copy/blink_any.elf",
+      "target": "localhost:3333",
+      "stopAtBeginningOfMainSubprogram": true
+    }
+  ]
+}
