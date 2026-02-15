@@ -1,0 +1,69 @@
+set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+
+project_dir := "."
+build_dir := "build-blink_any_copy"
+target := "blink_any"
+elf := "{{build_dir}}/{{target}}.elf"
+home := env_var_or_default("HOME", "")
+pico_home := env_var_or_default("PICO_TOOLS_HOME", home + "/.pico-sdk")
+toolchain_bin := env_var_or_default("PICO_TOOLCHAIN_BIN", pico_home + "/toolchain/13_2_Rel1/bin")
+cmake_bin := env_var_or_default("CMAKE_BIN", pico_home + "/cmake/v3.31.5/bin/cmake")
+ninja_bin := env_var_or_default("NINJA_BIN", pico_home + "/ninja/v1.12.1")
+gdb := env_var_or_default("GDB_BIN", toolchain_bin + "/arm-none-eabi-gdb")
+openocd_bin := env_var_or_default("OPENOCD_BIN", pico_home + "/openocd/0.12.0+dev/openocd")
+openocd_scripts := env_var_or_default("OPENOCD_SCRIPTS", pico_home + "/openocd/0.12.0+dev/scripts")
+tool_path := toolchain_bin + ":" + ninja_bin + ":" + pico_home + "/picotool/2.2.0-a4/picotool"
+
+# Pico Probe defaults.
+openocd_interface := "interface/cmsis-dap.cfg"
+openocd_target := "target/rp2040.cfg"
+openocd_adapter_speed := env_var_or_default("OPENOCD_ADAPTER_SPEED", "5000")
+
+default:
+    @just --list
+
+check:
+    @if [ ! -x "{{cmake_bin}}" ]; then \
+        echo "Missing cmake: {{cmake_bin}}"; \
+        exit 1; \
+    fi
+    @if [ ! -x "{{gdb}}" ]; then \
+        echo "Missing gdb: {{gdb}}"; \
+        exit 1; \
+    fi
+    @if [ ! -x "{{openocd_bin}}" ]; then \
+        echo "Missing openocd: {{openocd_bin}}"; \
+        exit 1; \
+    fi
+    @if [ ! -d "{{openocd_scripts}}" ]; then \
+        echo "Missing OpenOCD scripts dir: {{openocd_scripts}}"; \
+        exit 1; \
+    fi
+    @echo "Tool check passed."
+
+build:
+    PATH="{{tool_path}}:$PATH" {{cmake_bin}} -S {{project_dir}} -B {{build_dir}} -G Ninja \
+        -DCMAKE_BUILD_TYPE=Debug -DPICO_SDK_FETCH_FROM_GIT=ON
+    PATH="{{tool_path}}:$PATH" {{cmake_bin}} --build {{build_dir}} -j
+
+flash: build
+    {{openocd_bin}} -s {{openocd_scripts}} -f {{openocd_interface}} -f {{openocd_target}} \
+        -c "adapter speed {{openocd_adapter_speed}}" \
+        -c "program {{elf}} verify reset exit"
+
+openocd:
+    {{openocd_bin}} -s {{openocd_scripts}} -f {{openocd_interface}} -f {{openocd_target}} \
+        -c "adapter speed {{openocd_adapter_speed}}"
+
+debug: build
+    {{openocd_bin}} -s {{openocd_scripts}} -f {{openocd_interface}} -f {{openocd_target}} \
+        -c "adapter speed {{openocd_adapter_speed}}" > /tmp/openocd-{{target}}.log 2>&1 &
+    ocd_pid=$!
+    trap 'kill "$ocd_pid" 2>/dev/null || true' EXIT
+    sleep 1
+    {{gdb}} {{elf}} \
+        -ex "target extended-remote :3333" \
+        -ex "monitor reset halt"
+
+clean:
+    rm -rf {{build_dir}}
