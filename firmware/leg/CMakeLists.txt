@@ -39,7 +39,9 @@ add_executable(leg
     adc_pot.c
     motor_pwm.c
     telemetry.c
+    pio_uart_rx.c
 )
+pico_generate_pio_header(leg ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 
 pico_set_program_name(leg "leg")
 pico_set_program_version(leg "0.1")
@@ -62,6 +64,7 @@ target_link_libraries(leg
     hardware_adc
     hardware_pwm
     hardware_clocks
+    hardware_pio
     # hardware_i2c
 )
 
