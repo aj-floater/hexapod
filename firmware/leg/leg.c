@@ -8,6 +8,7 @@
 
 #include "adc_pot.h"
 #include "motor_pwm.h"
+#include "pio_uart_rx.h"
 #include "telemetry.h"
 
 // Potentiometer ADC mapping (servo angle feedback).
@@ -34,6 +35,8 @@
 #define CMD_IDLE_FLUSH_MS 80u
 #define STATUS_LED_GPIO 25u
 #define RX_LED_PULSE_MS 40u
+#define COMMAND_RX_GPIO 3u
+#define COMMAND_BAUD 115200u
 
 typedef struct {
     AdcPot a;
@@ -220,13 +223,20 @@ static bool parse_open_loop_start_command(const char *line, OpenLoopStartCommand
     return true;
 }
 
-static bool uart_try_read_line(UartLineBuffer *buffer, char *out_line, uint32_t out_line_size) {
+static bool uart_try_read_line(
+    PioUartRx *command_rx,
+    UartLineBuffer *buffer,
+    char *out_line,
+    uint32_t out_line_size
+) {
+    hard_assert(command_rx != NULL);
     hard_assert(buffer != NULL);
     hard_assert(out_line != NULL);
     hard_assert(out_line_size > 0u);
 
-    int ch = getchar_timeout_us(0u);
-    while (ch != PICO_ERROR_TIMEOUT) {
+    uint8_t received_byte = 0u;
+    while (pio_uart_rx_try_getc(command_rx, &received_byte)) {
+        int ch = (int)received_byte;
         rx_led_note_byte();
 
         if (ch == '\r' || ch == '\n') {
@@ -251,7 +261,6 @@ static bool uart_try_read_line(UartLineBuffer *buffer, char *out_line, uint32_t 
             buffer->flush_at = make_timeout_time_ms(CMD_IDLE_FLUSH_MS);
         }
 
-        ch = getchar_timeout_us(0u);
     }
 
     if (buffer->len > 0u && time_reached(buffer->flush_at)) {
@@ -349,6 +358,15 @@ int main(void) {
     init_adc_bank(&g_adc_bank);
     init_motor_bank(&g_motor_bank);
 
+    PioUartRx command_rx = {0};
+    if (!pio_uart_rx_init(&command_rx, pio0, COMMAND_RX_GPIO, COMMAND_BAUD)) {
+        printf("ERR: PIO RX init failed\r\n");
+        while (true) {
+            rx_led_tick();
+            tight_loop_contents();
+        }
+    }
+
     OpenLoopTest test = {0};
     UartLineBuffer command_buffer = {0};
     char command_line[CMD_BUFFER_LEN] = {0};
@@ -357,7 +375,12 @@ int main(void) {
     printf("READY: send START,duty,step_ms,F|R or S\r\n");
 
     while (true) {
-        if (!test.active && uart_try_read_line(&command_buffer, command_line, CMD_BUFFER_LEN)) {
+        if (!test.active && uart_try_read_line(
+                &command_rx,
+                &command_buffer,
+                command_line,
+                CMD_BUFFER_LEN
+            )) {
             OpenLoopStartCommand command;
             printf("RX: %s\r\n", command_line);
             if (parse_open_loop_start_command(command_line, &command)) {
