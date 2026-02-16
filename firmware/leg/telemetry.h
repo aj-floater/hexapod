@@ -21,6 +21,12 @@ typedef struct {
 } Telemetry;
 
 void telemetry_init(Telemetry *telemetry, uint32_t period_ms);
+bool telemetry_try_sample_one(
+    Telemetry *telemetry,
+    AdcPot *adc,
+    uint16_t *out_raw,
+    uint64_t *out_time_us
+);
 bool telemetry_try_sample_three(
     Telemetry *telemetry,
     AdcPot *adc_a,
