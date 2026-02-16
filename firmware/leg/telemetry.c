@@ -12,6 +12,27 @@ void telemetry_init(Telemetry *telemetry, uint32_t period_ms) {
     telemetry->next_sample_at = get_absolute_time();
 }
 
+bool telemetry_try_sample_one(
+    Telemetry *telemetry,
+    AdcPot *adc,
+    uint16_t *out_raw,
+    uint64_t *out_time_us
+) {
+    hard_assert(telemetry != NULL);
+    hard_assert(adc != NULL);
+    hard_assert(out_raw != NULL);
+    hard_assert(out_time_us != NULL);
+
+    if (!time_reached(telemetry->next_sample_at)) {
+        return false;
+    }
+
+    *out_raw = adc_pot_read_raw(adc);
+    *out_time_us = time_us_64();
+    telemetry->next_sample_at = make_timeout_time_ms(telemetry->period_ms);
+    return true;
+}
+
 bool telemetry_try_sample_three(
     Telemetry *telemetry,
     AdcPot *adc_a,
