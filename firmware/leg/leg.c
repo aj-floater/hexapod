@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "pico/time.h"
 
 #include "adc_pot.h"
 #include "motor_pwm.h"
@@ -25,12 +26,16 @@
 #define MOTOR_C_IN2_GPIO 23
 
 #define MOTOR_PWM_HZ 20000u
-#define OPEN_LOOP_SAMPLE_PERIOD_MS 20u
-#define OPEN_LOOP_PRE_STEP_MS 500u
-#define OPEN_LOOP_DEFAULT_DUTY_PCT 60u
-#define OPEN_LOOP_DEFAULT_STEP_MS 2000u
-#define OPEN_LOOP_MIN_STEP_MS 100u
-#define OPEN_LOOP_MAX_STEP_MS 10000u
+#define POSITION_CONTROLLER_UPDATE_MS 5u
+#define POSITION_PLOT_SAMPLE_MS 20u
+#define POSITION_STEP_DELAY_MS 1000u
+#define POSITION_HOLD_RUN_TIME_MS 10000u
+#define POSITION_SETPOINT_ADC 2600u
+#define POSITION_HOLD_DEADBAND_ADC 60u
+#define POSITION_P_MIN_OUTPUT_PCT 20u
+#define POSITION_P_MAX_OUTPUT_PCT 60u
+// P controller output = min_output + |position error| / POSITION_P_ERROR_TO_OUTPUT_DIVISOR.
+#define POSITION_P_ERROR_TO_OUTPUT_DIVISOR 16u
 #define CMD_BUFFER_LEN 64u
 #define CMD_IDLE_FLUSH_MS 80u
 #define STATUS_LED_GPIO 25u
@@ -57,22 +62,23 @@ typedef struct {
 } UartLineBuffer;
 
 typedef struct {
-    uint8_t duty_pct;
-    uint32_t step_ms;
-    bool reverse;
-} OpenLoopStartCommand;
+    bool start;
+    bool stop;
+} PositionCommand;
 
 typedef struct {
     bool active;
-    bool reverse;
-    bool step_applied;
-    uint8_t duty_pct;
-    uint32_t step_ms;
+    bool hold_enabled;
+    uint16_t baseline_target_adc;
+    uint16_t active_target_adc;
+    uint16_t latest_position_adc;
+    int16_t telemetry_drive_pct;
     uint64_t started_at_us;
-    absolute_time_t step_starts_at;
+    absolute_time_t next_control_at;
+    absolute_time_t hold_starts_at;
     absolute_time_t ends_at;
     Telemetry sample_timer;
-} OpenLoopTest;
+} PositionHoldDemo;
 
 static AdcBank g_adc_bank;
 static MotorBank g_motor_bank;
@@ -120,16 +126,6 @@ static void rx_led_tick(void) {
     }
 }
 
-static uint32_t clamp_u32(uint32_t value, uint32_t min_value, uint32_t max_value) {
-    if (value < min_value) {
-        return min_value;
-    }
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
-
 static bool str_equals_ignore_case(const char *lhs, const char *rhs) {
     while (*lhs != '\0' && *rhs != '\0') {
         if (toupper((unsigned char)*lhs) != toupper((unsigned char)*rhs)) {
@@ -171,56 +167,45 @@ static void normalize_command_line(const char *line, char *out_line, uint32_t ou
     out_line[out_len] = '\0';
 }
 
-static bool parse_open_loop_start_command(const char *line, OpenLoopStartCommand *out_cmd) {
+static bool parse_position_command(const char *line, PositionCommand *out_cmd) {
     char normalized[CMD_BUFFER_LEN] = {0};
     char command[16] = {0};
-    unsigned int duty_pct = OPEN_LOOP_DEFAULT_DUTY_PCT;
-    unsigned int step_ms = OPEN_LOOP_DEFAULT_STEP_MS;
-    char direction = 'F';
+
+    hard_assert(line != NULL);
+    hard_assert(out_cmd != NULL);
+
+    out_cmd->start = false;
+    out_cmd->stop = false;
 
     normalize_command_line(line, normalized, CMD_BUFFER_LEN);
     if (normalized[0] == '\0') {
         return false;
     }
 
-    if (
-        normalized[1] == '\0'
-        && (normalized[0] == 'S' || normalized[0] == 's')
-    ) {
-        out_cmd->duty_pct = OPEN_LOOP_DEFAULT_DUTY_PCT;
-        out_cmd->step_ms = OPEN_LOOP_DEFAULT_STEP_MS;
-        out_cmd->reverse = false;
+    if (normalized[1] == '\0' && (normalized[0] == 'S' || normalized[0] == 's')) {
+        out_cmd->start = true;
+        return true;
+    }
+    if (normalized[1] == '\0' && (normalized[0] == 'X' || normalized[0] == 'x')) {
+        out_cmd->stop = true;
         return true;
     }
 
-    int fields = sscanf(normalized, "%15s %u %u %c", command, &duty_pct, &step_ms, &direction);
-    if (fields < 1) {
-        return false;
-    }
-    if (!str_equals_ignore_case(command, "START") && !str_equals_ignore_case(command, "S")) {
-        return false;
-    }
-    if (fields < 2) {
-        duty_pct = OPEN_LOOP_DEFAULT_DUTY_PCT;
-    }
-    if (fields < 3) {
-        step_ms = OPEN_LOOP_DEFAULT_STEP_MS;
-    }
-    if (fields < 4) {
-        direction = 'F';
-    }
-
-    duty_pct = clamp_u32(duty_pct, 0u, 100u);
-    step_ms = clamp_u32(step_ms, OPEN_LOOP_MIN_STEP_MS, OPEN_LOOP_MAX_STEP_MS);
-    direction = (char)toupper((unsigned char)direction);
-    if (direction != 'F' && direction != 'R') {
+    int fields = sscanf(normalized, "%15s", command);
+    if (fields != 1) {
         return false;
     }
 
-    out_cmd->duty_pct = (uint8_t)duty_pct;
-    out_cmd->step_ms = (uint32_t)step_ms;
-    out_cmd->reverse = direction == 'R';
-    return true;
+    if (str_equals_ignore_case(command, "START") || str_equals_ignore_case(command, "S")) {
+        out_cmd->start = true;
+        return true;
+    }
+    if (str_equals_ignore_case(command, "STOP") || str_equals_ignore_case(command, "X")) {
+        out_cmd->stop = true;
+        return true;
+    }
+
+    return false;
 }
 
 static bool uart_try_read_line(
@@ -277,76 +262,112 @@ static bool uart_try_read_line(
     return false;
 }
 
-static void open_loop_test_start(
-    OpenLoopTest *test,
-    MotorPwm *motor_c,
-    const OpenLoopStartCommand *command
-) {
-    hard_assert(test != NULL);
-    hard_assert(motor_c != NULL);
-    hard_assert(command != NULL);
-
-    motor_pwm_coast(motor_c);
-
-    test->active = true;
-    test->reverse = command->reverse;
-    test->step_applied = false;
-    test->duty_pct = command->duty_pct;
-    test->step_ms = command->step_ms;
-    test->started_at_us = time_us_64();
-    test->step_starts_at = make_timeout_time_ms(OPEN_LOOP_PRE_STEP_MS);
-    test->ends_at = make_timeout_time_ms(OPEN_LOOP_PRE_STEP_MS + test->step_ms);
-    telemetry_init(&test->sample_timer, OPEN_LOOP_SAMPLE_PERIOD_MS);
+static uint16_t position_compute_drive_duty(uint16_t error_magnitude) {
+    uint16_t duty_pct = (uint16_t)(
+        POSITION_P_MIN_OUTPUT_PCT + (error_magnitude / POSITION_P_ERROR_TO_OUTPUT_DIVISOR)
+    );
+    if (duty_pct > POSITION_P_MAX_OUTPUT_PCT) {
+        return POSITION_P_MAX_OUTPUT_PCT;
+    }
+    return duty_pct;
 }
 
-static void open_loop_test_stop(OpenLoopTest *test, MotorPwm *motor_c) {
-    hard_assert(test != NULL);
-    hard_assert(motor_c != NULL);
-
-    motor_pwm_coast(motor_c);
-    test->active = false;
-}
-
-static void open_loop_test_tick(OpenLoopTest *test, MotorPwm *motor_c, AdcPot *adc_c) {
-    hard_assert(test != NULL);
+static void position_hold_demo_stop(PositionHoldDemo *demo, MotorPwm *motor_c, AdcPot *adc_c) {
+    hard_assert(demo != NULL);
     hard_assert(motor_c != NULL);
     hard_assert(adc_c != NULL);
 
-    if (!test->active) {
+    demo->latest_position_adc = adc_pot_read_raw(adc_c);
+    demo->baseline_target_adc = demo->latest_position_adc;
+    demo->active_target_adc = demo->latest_position_adc;
+    demo->telemetry_drive_pct = 0;
+    demo->hold_enabled = false;
+    demo->active = false;
+    motor_pwm_brake(motor_c);
+}
+
+static void position_hold_demo_start(PositionHoldDemo *demo, MotorPwm *motor_c, AdcPot *adc_c) {
+    hard_assert(demo != NULL);
+    hard_assert(motor_c != NULL);
+    hard_assert(adc_c != NULL);
+
+    uint16_t initial_position_adc = adc_pot_read_raw(adc_c);
+
+    motor_pwm_coast(motor_c);
+    demo->active = true;
+    demo->hold_enabled = false;
+    demo->baseline_target_adc = initial_position_adc;
+    demo->active_target_adc = initial_position_adc;
+    demo->latest_position_adc = initial_position_adc;
+    demo->telemetry_drive_pct = 0;
+    demo->started_at_us = time_us_64();
+    demo->next_control_at = get_absolute_time();
+    demo->hold_starts_at = make_timeout_time_ms(POSITION_STEP_DELAY_MS);
+    demo->ends_at = make_timeout_time_ms(POSITION_HOLD_RUN_TIME_MS);
+    telemetry_init(&demo->sample_timer, POSITION_PLOT_SAMPLE_MS);
+}
+
+static void position_hold_demo_tick(PositionHoldDemo *demo, MotorPwm *motor_c, AdcPot *adc_c) {
+    hard_assert(demo != NULL);
+    hard_assert(motor_c != NULL);
+    hard_assert(adc_c != NULL);
+
+    if (!demo->active) {
         return;
     }
 
-    if (!test->step_applied && time_reached(test->step_starts_at)) {
-        if (test->reverse) {
-            motor_pwm_set_reverse_duty(motor_c, test->duty_pct);
-        } else {
-            motor_pwm_set_forward_duty(motor_c, test->duty_pct);
-        }
-        test->step_applied = true;
-    }
-
-    if (time_reached(test->ends_at)) {
+    if (time_reached(demo->ends_at)) {
         printf("DONE\r\n");
-        open_loop_test_stop(test, motor_c);
+        position_hold_demo_stop(demo, motor_c, adc_c);
         return;
+    }
+
+    if (time_reached(demo->next_control_at)) {
+        demo->latest_position_adc = adc_pot_read_raw(adc_c);
+
+                if (!demo->hold_enabled && time_reached(demo->hold_starts_at)) {
+                    demo->hold_enabled = true;
+                    demo->active_target_adc = POSITION_SETPOINT_ADC;
+                }
+
+        if (!demo->hold_enabled) {
+            demo->active_target_adc = demo->baseline_target_adc;
+            demo->telemetry_drive_pct = 0;
+            motor_pwm_coast(motor_c);
+        } else {
+            int32_t error = (int32_t)demo->active_target_adc - (int32_t)demo->latest_position_adc;
+            uint32_t error_magnitude = (error >= 0) ? (uint32_t)error : (uint32_t)(-error);
+
+            if (error_magnitude <= POSITION_HOLD_DEADBAND_ADC) {
+                demo->telemetry_drive_pct = 0;
+                motor_pwm_brake(motor_c);
+            } else {
+                uint16_t duty_pct = position_compute_drive_duty((uint16_t)error_magnitude);
+                if (error > 0) {
+                    motor_pwm_set_forward_duty(motor_c, (uint8_t)duty_pct);
+                    demo->telemetry_drive_pct = (int16_t)duty_pct;
+                } else {
+                    motor_pwm_set_reverse_duty(motor_c, (uint8_t)duty_pct);
+                    demo->telemetry_drive_pct = (int16_t)(-((int16_t)duty_pct));
+                }
+            }
+        }
+
+        demo->next_control_at = make_timeout_time_ms(POSITION_CONTROLLER_UPDATE_MS);
     }
 
     uint16_t adc_c_raw = 0u;
     uint64_t sample_us = 0u;
-    if (!telemetry_try_sample_one(&test->sample_timer, adc_c, &adc_c_raw, &sample_us)) {
+    if (!telemetry_try_sample_one(&demo->sample_timer, adc_c, &adc_c_raw, &sample_us)) {
         return;
     }
 
-    uint8_t ref_pwm_pct = test->step_applied ? test->duty_pct : 0u;
-    uint16_t ref_step_adc = (uint16_t)(((uint32_t)ref_pwm_pct * ADC_POT_MAX_RAW) / 100u);
-    uint32_t t_ms = (uint32_t)((sample_us - test->started_at_us) / 1000u);
-
-    // VS Code Serial Plotter format.
+    uint32_t t_ms = (uint32_t)((sample_us - demo->started_at_us) / 1000u);
     printf(
-        ">ref_step_adc:%u,adc_c_raw:%u,ref_pwm_pct:%u,t_ms:%u\r\n",
-        ref_step_adc,
+        ">setpoint_adc:%u,measured_adc:%u,control_output_pct:%d,t_ms:%u\r\n",
+        demo->active_target_adc,
         adc_c_raw,
-        ref_pwm_pct,
+        demo->telemetry_drive_pct,
         t_ms
     );
 }
@@ -367,36 +388,37 @@ int main(void) {
         }
     }
 
-    OpenLoopTest test = {0};
+    PositionHoldDemo demo = {0};
     UartLineBuffer command_buffer = {0};
     char command_line[CMD_BUFFER_LEN] = {0};
     command_buffer.flush_at = make_timeout_time_ms(CMD_IDLE_FLUSH_MS);
 
-    printf("READY: send START,duty,step_ms,F|R or S\r\n");
+    position_hold_demo_start(&demo, &g_motor_bank.c, &g_adc_bank.c);
+    printf("READY: send START|S or STOP|X\r\n");
 
     while (true) {
-        if (!test.active && uart_try_read_line(
+        if (uart_try_read_line(
                 &command_rx,
                 &command_buffer,
                 command_line,
                 CMD_BUFFER_LEN
             )) {
-            OpenLoopStartCommand command;
+            PositionCommand command;
             printf("RX: %s\r\n", command_line);
-            if (parse_open_loop_start_command(command_line, &command)) {
-                printf(
-                    "ACK: duty_pct=%u step_ms=%u dir=%c\r\n",
-                    command.duty_pct,
-                    command.step_ms,
-                    command.reverse ? 'R' : 'F'
-                );
-                open_loop_test_start(&test, &g_motor_bank.c, &command);
+            if (parse_position_command(command_line, &command)) {
+                if (command.start) {
+                    printf("ACK: START setpoint_adc=%u\r\n", POSITION_SETPOINT_ADC);
+                    position_hold_demo_start(&demo, &g_motor_bank.c, &g_adc_bank.c);
+                } else if (command.stop) {
+                    printf("ACK: STOP\r\n");
+                    position_hold_demo_stop(&demo, &g_motor_bank.c, &g_adc_bank.c);
+                }
             } else {
-                printf("ERR: expected START,duty,step_ms,F|R or S\r\n");
+                printf("ERR: expected START|S or STOP|X\r\n");
             }
         }
 
-        open_loop_test_tick(&test, &g_motor_bank.c, &g_adc_bank.c);
+        position_hold_demo_tick(&demo, &g_motor_bank.c, &g_adc_bank.c);
         rx_led_tick();
         tight_loop_contents();
     }
