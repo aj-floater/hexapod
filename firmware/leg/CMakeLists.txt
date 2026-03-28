@@ -40,6 +40,7 @@ add_executable(leg
     motor_pwm.c
     telemetry.c
     pio_uart_rx.c
+    ../common/hexapod_serial.c
 )
 pico_generate_pio_header(leg ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
 
@@ -71,6 +72,7 @@ target_link_libraries(leg
 # Add the standard include files to the build
 target_include_directories(leg PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../common
 )
 
 pico_add_extra_outputs(leg)
