@@ -128,6 +128,12 @@ def _run_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_gui(args: argparse.Namespace) -> int:
+    from .gui.app import run_gui
+
+    return run_gui(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="devlink-dashboard")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -154,6 +160,13 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("path")
     replay.add_argument("--summary-only", action="store_true")
     replay.set_defaults(func=_run_replay)
+
+    gui = subparsers.add_parser("gui", help="launch the desktop dashboard")
+    gui.add_argument("--port")
+    gui.add_argument("--baud", type=int, default=115200)
+    gui.add_argument("--timeout", type=float, default=0.05)
+    gui.add_argument("--record")
+    gui.set_defaults(func=_run_gui)
 
     return parser
 

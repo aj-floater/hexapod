@@ -177,6 +177,7 @@ DevlinkSerialLineReadStatus devlink_serial_line_buffer_flush_if_idle(
 
 void devlink_serial_print_hello(const DevlinkSerialDeviceDescriptor *device);
 void devlink_serial_print_capabilities(const DevlinkSerialDeviceDescriptor *device);
+void devlink_serial_print_discovery(const DevlinkSerialDeviceDescriptor *device);
 void devlink_serial_print_event(
     const DevlinkSerialDeviceDescriptor *device,
     const char *name,
