@@ -129,7 +129,7 @@ def _run_replay(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="hexapod-dashboard")
+    parser = argparse.ArgumentParser(prog="devlink-dashboard")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     monitor = subparsers.add_parser("monitor", help="monitor a live serial device")

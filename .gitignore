@@ -48,3 +48,10 @@ latexbuild/
 
 # VS Code workspace settings that are user-specific (uncomment if desired)
 # .vscode/
+
+# Local reference/source materials for report writing
+docs/reference/
+
+# Python generated artifacts
+__pycache__/
+*.egg-info/

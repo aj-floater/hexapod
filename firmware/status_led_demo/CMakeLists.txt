@@ -16,7 +16,7 @@ else()
     set(USERHOME $ENV{HOME})
 endif()
 set(sdkVersion 2.2.0)
-set(toolchainVersion 13_2_Rel1)
+set(toolchainVersion 14_2_Rel1)
 set(picotoolVersion 2.2.0-a4)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
@@ -29,26 +29,21 @@ set(PICO_BOARD pico CACHE STRING "Board type")
 include(pico_sdk_import.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../common/devlink_serial.cmake)
 
-project(leg C CXX ASM)
+project(status_led_demo C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
-add_executable(leg
-    leg.c
-    adc_pot.c
-    motor_pwm.c
-    telemetry.c
-)
-devlink_serial_enable_for_target(leg)
-devlink_pio_uart_rx_enable_for_target(leg)
 
-pico_set_program_name(leg "leg")
-pico_set_program_version(leg "0.1")
+add_executable(status_led_demo status_led_demo.c )
+devlink_serial_enable_for_target(status_led_demo)
+devlink_pio_uart_rx_enable_for_target(status_led_demo)
 
-# UART mapping for Pico Probe serial output.
-target_compile_definitions(leg PRIVATE
+pico_set_program_name(status_led_demo "status_led_demo")
+pico_set_program_version(status_led_demo "0.1")
+
+target_compile_definitions(status_led_demo PRIVATE
     PICO_DEFAULT_UART=1
     PICO_DEFAULT_UART_TX_PIN=4
     PICO_DEFAULT_UART_RX_PIN=3
@@ -56,20 +51,16 @@ target_compile_definitions(leg PRIVATE
 )
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(leg 1)
-pico_enable_stdio_usb(leg 0)
+pico_enable_stdio_uart(status_led_demo 1)
+pico_enable_stdio_usb(status_led_demo 0)
 
-# Add requested libraries.
-target_link_libraries(leg
-    pico_stdlib
-    hardware_adc
-    hardware_pwm
-    # hardware_i2c
-)
+# Add the standard library to the build
+target_link_libraries(status_led_demo
+        pico_stdlib)
 
 # Add the standard include files to the build
-target_include_directories(leg PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
+target_include_directories(status_led_demo PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
 )
 
-pico_add_extra_outputs(leg)
+pico_add_extra_outputs(status_led_demo)

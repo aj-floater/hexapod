@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Mapping, TypeAlias
 
-PROTOCOL_NAME = "hexapod.serial"
+PROTOCOL_NAME = "devlink"
 PROTOCOL_VERSION = 1
 
 JSONScalar: TypeAlias = str | int | float | bool | None
