@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..messages import (
@@ -15,15 +14,8 @@ from ..messages import (
     SampleMessage,
 )
 from .controller import ConnectionConfig, GuiController
-
-_PLOT_COLORS = (
-    "#0b84f3",
-    "#f39c12",
-    "#19b36b",
-    "#d64550",
-    "#8a5cf6",
-    "#00a4a6",
-)
+from .plot_workspace import PlotWorkspaceWidget
+from .workspace import PlotWorkspace, WorkspaceStore, default_trace_color
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -41,6 +33,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_timeout = initial_timeout
         self._selected_device: str | None = None
         self._selected_stream: str | None = None
+        self._workspace: PlotWorkspace | None = None
+        self._workspace_loaded_from_store = False
+        self._workspace_user_modified = False
         self._current_command_specs: list[CommandSpec] = []
         self._current_param_specs: list[ParamSpec] = []
         self._command_widgets: dict[str, tuple[str, QtWidgets.QWidget]] = {}
@@ -53,8 +48,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_command_params: dict[int, str] = {}
         self._device_names: list[str] = []
         self._stream_names: list[str] = []
+        self._field_names: list[str] = []
         self._param_schema: tuple[ParamSpec, ...] = ()
-        self._stream_units: dict[str, str] = {}
+        self._workspace_store = WorkspaceStore()
 
         self.setWindowTitle("Devlink Dashboard")
         self.resize(1400, 900)
@@ -141,7 +137,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         left_layout.addWidget(QtWidgets.QLabel("Streams"))
         self._stream_list = QtWidgets.QListWidget()
-        left_layout.addWidget(self._stream_list, 2)
+        left_layout.addWidget(self._stream_list, 1)
+
+        left_layout.addWidget(QtWidgets.QLabel("Fields"))
+        self._field_list = QtWidgets.QListWidget()
+        self._field_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        left_layout.addWidget(self._field_list, 1)
+
+        self._add_trace_button = QtWidgets.QPushButton("Add Field To Active Pane")
+        left_layout.addWidget(self._add_trace_button)
         body_splitter.addWidget(left_panel)
 
         center_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -151,20 +155,29 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_layout = QtWidgets.QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.setSpacing(8)
-        self._plot_caption = QtWidgets.QLabel("No stream selected")
-        plot_layout.addWidget(self._plot_caption)
-        self._plot_widget = pg.PlotWidget()
-        self._plot_widget.setBackground("#101822")
-        self._plot_widget.showGrid(x=True, y=True, alpha=0.2)
-        self._plot_widget.setLabel("bottom", "Device Time", units="us")
-        plot_layout.addWidget(self._plot_widget, 1)
+
+        workspace_toolbar = QtWidgets.QHBoxLayout()
+        workspace_toolbar.setSpacing(6)
+        self._workspace_label = QtWidgets.QLabel("No plot workspace loaded")
+        workspace_toolbar.addWidget(self._workspace_label, 1)
+        self._add_pane_button = QtWidgets.QPushButton("Add Pane")
+        workspace_toolbar.addWidget(self._add_pane_button)
+        self._duplicate_pane_button = QtWidgets.QPushButton("Duplicate Pane")
+        workspace_toolbar.addWidget(self._duplicate_pane_button)
+        self._remove_pane_button = QtWidgets.QPushButton("Remove Pane")
+        workspace_toolbar.addWidget(self._remove_pane_button)
+        plot_layout.addLayout(workspace_toolbar)
+
+        self._plot_workspace = PlotWorkspaceWidget()
+        plot_layout.addWidget(self._plot_workspace, 1)
         center_splitter.addWidget(plot_panel)
 
         value_panel = QtWidgets.QWidget()
         value_layout = QtWidgets.QVBoxLayout(value_panel)
         value_layout.setContentsMargins(0, 0, 0, 0)
         value_layout.setSpacing(8)
-        value_layout.addWidget(QtWidgets.QLabel("Current Values"))
+        self._values_label = QtWidgets.QLabel("Pane Values")
+        value_layout.addWidget(self._values_label)
         self._value_table = QtWidgets.QTableWidget(0, 3)
         self._value_table.setHorizontalHeaderLabels(["Field", "Value", "Unit"])
         self._value_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -294,9 +307,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_button.clicked.connect(self._toggle_connection)
         self._device_list.currentTextChanged.connect(self._on_device_selected)
         self._stream_list.currentTextChanged.connect(self._on_stream_selected)
+        self._field_list.itemDoubleClicked.connect(lambda _item: self._add_selected_field_to_active_pane())
+        self._add_trace_button.clicked.connect(self._add_selected_field_to_active_pane)
+        self._add_pane_button.clicked.connect(self._plot_workspace.add_pane)
+        self._duplicate_pane_button.clicked.connect(self._plot_workspace.duplicate_active_pane)
+        self._remove_pane_button.clicked.connect(self._plot_workspace.remove_active_pane)
         self._command_combo.currentIndexChanged.connect(self._rebuild_command_form)
         self._event_filter.currentTextChanged.connect(self._refresh_events_view)
         self._log_filter.currentTextChanged.connect(self._refresh_logs_view)
+        self._plot_workspace.workspace_changed.connect(self._on_workspace_changed)
+        self._plot_workspace.active_pane_changed.connect(lambda _pane_id: self._refresh_values_table())
 
         self._controller.ports_changed.connect(self._refresh_port_combo)
         self._controller.session_reset.connect(self._on_session_reset)
@@ -395,16 +415,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_session_reset(self) -> None:
         self._selected_device = None
         self._selected_stream = None
+        self._workspace = None
+        self._workspace_loaded_from_store = False
+        self._workspace_user_modified = False
         self._pending_param_values = {}
         self._param_apply_commands = {}
         self._apply_command_params = {}
         self._device_names = []
         self._stream_names = []
+        self._field_names = []
         self._param_schema = ()
         self._device_list.clear()
         self._stream_list.clear()
-        self._plot_widget.clear()
-        self._plot_caption.setText("No stream selected")
+        self._field_list.clear()
+        self._plot_workspace.set_workspace(None)
+        self._workspace_label.setText("No plot workspace loaded")
+        self._values_label.setText("Pane Values")
         self._value_table.setRowCount(0)
         self._param_table.setRowCount(0)
         self._events_view.clear()
@@ -429,6 +455,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._record_checkbox.setEnabled(not connected)
         self._record_path_edit.setEnabled(not connected)
         self._browse_button.setEnabled(not connected)
+        self._add_pane_button.setEnabled(connected)
+        self._duplicate_pane_button.setEnabled(connected)
+        self._remove_pane_button.setEnabled(connected)
+        self._add_trace_button.setEnabled(connected)
         self._refresh_discovery_views()
 
     def _on_discovery_state_changed(self, _state: str) -> None:
@@ -484,6 +514,94 @@ class MainWindow(QtWidgets.QMainWindow):
             self._selected_stream = None
         del blocker
 
+    def _refresh_field_list(self) -> None:
+        if self._selected_device is None or self._selected_stream is None:
+            self._field_names = []
+            self._field_list.clear()
+            return
+
+        names = [field.name for field in self._controller.runtime.field_specs_for_stream(self._selected_device, self._selected_stream)]
+        if names == self._field_names:
+            return
+
+        self._field_names = list(names)
+        selected_name = None
+        item = self._field_list.currentItem()
+        if item is not None:
+            selected_name = item.text()
+        blocker = QtCore.QSignalBlocker(self._field_list)
+        self._field_list.clear()
+        for name in names:
+            self._field_list.addItem(name)
+        if selected_name in names:
+            self._field_list.setCurrentRow(names.index(selected_name))
+        elif names:
+            self._field_list.setCurrentRow(0)
+        del blocker
+
+    def _load_workspace_for_selected_device(self) -> None:
+        if self._selected_device is None:
+            self._workspace = None
+            self._plot_workspace.set_workspace(None)
+            self._workspace_label.setText("No plot workspace loaded")
+            return
+
+        try:
+            workspace = self._workspace_store.load(self._selected_device)
+        except Exception as exc:
+            self._show_status(f"failed to load saved layout: {exc}", error=True)
+            workspace = None
+
+        self._workspace_loaded_from_store = workspace is not None
+        self._workspace_user_modified = False
+        if workspace is None:
+            workspace = self._controller.runtime.build_default_workspace(self._selected_device)
+
+        self._workspace = workspace
+        self._plot_workspace.set_workspace(workspace)
+        self._workspace_label.setText(f"Workspace for {workspace.device}")
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._refresh_values_table()
+
+    def _maybe_seed_default_workspace(self) -> None:
+        if (
+            self._selected_device is None
+            or self._workspace is None
+            or self._workspace_loaded_from_store
+            or self._workspace_user_modified
+        ):
+            return
+
+        if any(pane.traces for pane in self._workspace.panes):
+            return
+
+        seeded = self._controller.runtime.build_default_workspace(self._selected_device)
+        if not any(pane.traces for pane in seeded.panes):
+            return
+        self._workspace = seeded
+        self._plot_workspace.set_workspace(seeded)
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._refresh_values_table()
+
+    def _add_selected_field_to_active_pane(self) -> None:
+        if self._selected_stream is None or self._selected_device is None:
+            return
+        item = self._field_list.currentItem()
+        if item is None:
+            return
+
+        active = self._plot_workspace.active_pane_id
+        workspace = self._plot_workspace.workspace
+        if active is None or workspace is None:
+            self._show_status("add a pane first", error=True)
+            return
+
+        pane = next((entry for entry in workspace.panes if entry.id == active), None)
+        if pane is None:
+            return
+        color = default_trace_color(len(pane.traces))
+        self._plot_workspace.add_trace(self._selected_stream, item.text(), color)
+
     def _on_device_selected(self, device: str) -> None:
         previous_device = self._selected_device
         self._selected_device = device or None
@@ -493,37 +611,50 @@ class MainWindow(QtWidgets.QMainWindow):
             self._param_apply_commands = {}
             self._apply_command_params = {}
             self._stream_names = []
+            self._field_names = []
             self._param_schema = ()
+            self._workspace_loaded_from_store = False
+            self._workspace_user_modified = False
         self._refresh_stream_list()
+        self._refresh_field_list()
+        self._load_workspace_for_selected_device()
         self._refresh_params_table()
         self._refresh_command_specs()
         self._refresh_events_view()
         self._refresh_logs_view()
-        self._refresh_plot_and_values()
         self._refresh_discovery_views()
 
     def _on_stream_selected(self, stream_name: str) -> None:
         self._selected_stream = stream_name or None
-        self._refresh_plot_and_values()
+        self._refresh_field_list()
 
     def _on_message_received(self, message: object) -> None:
+        previous_device = self._selected_device
         self._refresh_device_list()
+        if previous_device != self._selected_device and self._selected_device is not None:
+            self._on_device_selected(self._selected_device)
 
         if isinstance(message, CapabilitiesMessage):
             if self._selected_device is None:
                 self._selected_device = message.device
+                self._on_device_selected(message.device)
+            self._maybe_seed_default_workspace()
             self._refresh_stream_list()
+            self._refresh_field_list()
             self._refresh_params_table()
             self._refresh_command_specs()
+            self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+            self._refresh_values_table()
             self._show_status(f"loaded capabilities for {message.device}")
         elif isinstance(message, SampleMessage):
-            if self._selected_device == message.device and (
-                self._selected_stream is None or self._selected_stream == message.stream
-            ):
+            if self._selected_device == message.device:
                 if self._selected_stream is None:
                     self._selected_stream = message.stream
                     self._refresh_stream_list()
-                self._refresh_plot_and_values()
+                    self._refresh_field_list()
+                self._maybe_seed_default_workspace()
+                self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+                self._refresh_values_table()
         elif isinstance(message, RespMessage):
             param_name = self._apply_command_params.pop(message.id, None)
             if param_name is not None and self._param_apply_commands.get(param_name) == message.id:
@@ -535,56 +666,46 @@ class MainWindow(QtWidgets.QMainWindow):
                 suffix = f" error={message.error.code}: {message.error.message}"
             self._command_response_label.setText(f"resp id={message.id} ok={message.ok}{suffix}")
             self._refresh_params_table()
+            self._refresh_values_table()
         elif isinstance(message, EventMessage):
             self._refresh_events_view()
         elif isinstance(message, LogMessage):
             self._refresh_logs_view()
         self._refresh_discovery_views()
 
-    def _stream_units_for_selected(self) -> dict[str, str]:
-        units: dict[str, str] = {}
-        stream_spec = self._controller.runtime.get_stream_spec(self._selected_device, self._selected_stream)
-        if stream_spec is None:
-            return units
-        for field in stream_spec.fields:
-            units[field.name] = field.unit
-        return units
+    def _on_workspace_changed(self, workspace: object) -> None:
+        if not isinstance(workspace, PlotWorkspace):
+            return
+        self._workspace = workspace
+        self._workspace_user_modified = True
+        self._workspace_label.setText(f"Workspace for {workspace.device}")
+        try:
+            self._workspace_store.save(workspace)
+        except Exception as exc:
+            self._show_status(f"failed to save layout: {exc}", error=True)
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._refresh_values_table()
 
-    def _refresh_plot_and_values(self) -> None:
-        self._plot_widget.clear()
-        self._stream_units = self._stream_units_for_selected()
-
-        if self._selected_device is None or self._selected_stream is None:
-            self._plot_caption.setText("No stream selected")
+    def _refresh_values_table(self) -> None:
+        if self._selected_device is None:
+            self._values_label.setText("Pane Values")
             self._value_table.setRowCount(0)
             return
 
-        field_names = self._controller.runtime.numeric_field_names(self._selected_device, self._selected_stream)
-        if field_names:
-            self._plot_caption.setText(
-                f"{self._selected_device} / {self._selected_stream} ({', '.join(field_names)})"
-            )
-        else:
-            self._plot_caption.setText(f"{self._selected_device} / {self._selected_stream} (no numeric fields)")
-
-        for index, field_name in enumerate(field_names):
-            x_values, y_values = self._controller.runtime.series_for_field(
-                self._selected_device,
-                self._selected_stream,
-                field_name,
-            )
-            if not x_values:
-                continue
-            pen = pg.mkPen(_PLOT_COLORS[index % len(_PLOT_COLORS)], width=2)
-            self._plot_widget.plot(x_values, y_values, pen=pen)
-
-        values = self._controller.runtime.latest_stream_values(self._selected_device, self._selected_stream)
-        items = list(values.items())
-        self._value_table.setRowCount(len(items))
-        for row, (field_name, value) in enumerate(items):
-            self._value_table.setItem(row, 0, QtWidgets.QTableWidgetItem(field_name))
-            self._value_table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(value)))
-            self._value_table.setItem(row, 2, QtWidgets.QTableWidgetItem(self._stream_units.get(field_name, "")))
+        values = self._plot_workspace.active_trace_values(self._controller.runtime, self._selected_device)
+        active_pane = self._plot_workspace.active_pane_id
+        active_title = None
+        if self._workspace is not None and active_pane is not None:
+            for pane in self._workspace.panes:
+                if pane.id == active_pane:
+                    active_title = pane.title
+                    break
+        self._values_label.setText("Pane Values" if active_title is None else f"Pane Values ({active_title})")
+        self._value_table.setRowCount(len(values))
+        for row, (label, value, unit) in enumerate(values):
+            self._value_table.setItem(row, 0, QtWidgets.QTableWidgetItem(label))
+            self._value_table.setItem(row, 1, QtWidgets.QTableWidgetItem("" if value is None else str(value)))
+            self._value_table.setItem(row, 2, QtWidgets.QTableWidgetItem(unit))
 
     def _refresh_params_from_device(self) -> None:
         if self._selected_device is None:
@@ -894,6 +1015,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._commands_state_label.setText(commands_message)
         self._command_combo.setEnabled(has_capabilities and bool(self._current_command_specs))
         self._command_form_container.setEnabled(has_capabilities and bool(self._current_command_specs))
+        self._add_trace_button.setEnabled(has_capabilities and self._selected_stream is not None)
+        workspace_ready = self._selected_device is not None and self._controller.is_connected
+        self._add_pane_button.setEnabled(workspace_ready)
+        self._duplicate_pane_button.setEnabled(workspace_ready and self._plot_workspace.active_pane_id is not None)
+        self._remove_pane_button.setEnabled(workspace_ready and self._plot_workspace.active_pane_id is not None)
 
     def _current_param_value(self, spec: ParamSpec, device_model) -> object:
         if device_model is None:

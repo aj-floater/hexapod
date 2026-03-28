@@ -55,6 +55,14 @@ devlink-dashboard gui --port /dev/ttyACM0 --record session.jsonl
 
 The GUI now sends a bootstrap `device.describe` command on connect so it can recover `hello` and `capabilities` even if the board was already running before the host attached.
 
+The plot workspace supports:
+
+- multiple vertically stacked panes
+- linked or independent horizontal time navigation via pane time groups
+- mixed-stream traces within the selected device
+- per-trace hide/show, removal, and color changes
+- per-device saved layouts restored across launches
+
 ## Package Layout
 
 - `devlink_dashboard.messages`: typed message schema and NDJSON parsing
