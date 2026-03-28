@@ -27,6 +27,7 @@ set(PICO_BOARD pico CACHE STRING "Board type")
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/../common/devlink_serial.cmake)
 
 project(leg C CXX ASM)
 
@@ -39,10 +40,9 @@ add_executable(leg
     adc_pot.c
     motor_pwm.c
     telemetry.c
-    pio_uart_rx.c
-    ../common/hexapod_serial.c
 )
-pico_generate_pio_header(leg ${CMAKE_CURRENT_LIST_DIR}/uart_rx.pio)
+devlink_serial_enable_for_target(leg)
+devlink_pio_uart_rx_enable_for_target(leg)
 
 pico_set_program_name(leg "leg")
 pico_set_program_version(leg "0.1")
@@ -64,15 +64,12 @@ target_link_libraries(leg
     pico_stdlib
     hardware_adc
     hardware_pwm
-    hardware_clocks
-    hardware_pio
     # hardware_i2c
 )
 
 # Add the standard include files to the build
 target_include_directories(leg PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/../common
 )
 
 pico_add_extra_outputs(leg)

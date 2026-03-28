@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hexapod_dashboard.messages import build_cmd_message
-from hexapod_dashboard.session import JsonlRecorder, iter_recorded_lines, iter_recorded_messages
+from devlink_dashboard.messages import build_cmd_message
+from devlink_dashboard.session import JsonlRecorder, iter_recorded_lines, iter_recorded_messages
 
 
 class SessionTests(unittest.TestCase):

@@ -25,7 +25,7 @@ class SerialTransport:
             import serial  # type: ignore[import-not-found]
         except ImportError as exc:
             raise SerialUnavailableError(
-                "pyserial is required for live serial transport; install tools/hexapod_dashboard[serial]"
+                "pyserial is required for live serial transport; install tools/devlink_dashboard[serial]"
             ) from exc
         return serial
 
@@ -69,7 +69,7 @@ def list_serial_ports() -> list[str]:
         from serial.tools import list_ports  # type: ignore[import-not-found]
     except ImportError as exc:
         raise SerialUnavailableError(
-            "pyserial is required for live serial transport; install tools/hexapod_dashboard[serial]"
+            "pyserial is required for live serial transport; install tools/devlink_dashboard[serial]"
         ) from exc
     return [port.device for port in list_ports.comports()]
 

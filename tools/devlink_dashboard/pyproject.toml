@@ -1,7 +1,7 @@
 [project]
-name = "hexapod-dashboard"
+name = "devlink-dashboard"
 version = "0.1.0"
-description = "Host-side transport and protocol tooling for hexapod.serial"
+description = "Host-side transport and protocol tooling for devlink"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -9,7 +9,7 @@ dependencies = []
 serial = ["pyserial>=3.5"]
 
 [project.scripts]
-hexapod-dashboard = "hexapod_dashboard.cli:main"
+devlink-dashboard = "devlink_dashboard.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

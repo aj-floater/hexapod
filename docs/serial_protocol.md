@@ -1,6 +1,6 @@
-# Hexapod Serial Protocol v1
+# Devlink Protocol v1
 
-`hexapod.serial` is the canonical UART-first protocol for firmware targets in this repository.
+`devlink` is the canonical UART-first protocol for firmware targets in this repository.
 
 Version `1` uses UTF-8 newline-delimited JSON (`NDJSON`):
 
@@ -30,12 +30,12 @@ Every message must include:
 Emitted once on boot or reconnect.
 
 ```json
-{"type":"hello","version":1,"device":"leg","protocol":"hexapod.serial","firmware":"0.1.0"}
+{"type":"hello","version":1,"device":"leg","protocol":"devlink","firmware":"0.1.0"}
 ```
 
 Fields:
 
-- `protocol`: fixed string `hexapod.serial`
+- `protocol`: fixed string `devlink`
 - `firmware`: firmware identifier or version string
 
 ### `capabilities`
@@ -178,6 +178,16 @@ Fields:
 - Hosts should auto-build generic plots from `capabilities.streams` and numeric `sample.data` fields.
 - Hosts should treat `capabilities` as the schema source and `resp` messages as the mutable state source for parameters.
 
+## Firmware Integration
+
+Firmware targets should reuse the shared Pico helper in `firmware/common/devlink_serial.h` and `firmware/common/devlink_serial.c`.
+
+- Add the library to a target with `include(../common/devlink_serial.cmake)` and `devlink_serial_enable_for_target(<target>)`.
+- Describe the device with static descriptor tables for commands, streams, and params.
+- Use the shared line buffer to assemble newline-delimited commands from UART or `stdio` input.
+- Reserve `param.list`, `param.get`, and `param.set` for the shared library; targets only provide param descriptors plus get/set callbacks.
+- Keep target logic in local callbacks and state structs; the shared helper owns `hello`, `capabilities`, `resp`, `event`, `log`, and `sample` formatting.
+
 ## v1 Reference Target
 
 `firmware/leg` is the first v1 adopter:
@@ -190,3 +200,12 @@ Fields:
   - `control.min_output_pct`
   - `control.max_output_pct`
   - `control.error_to_output_divisor`
+
+`firmware/status_led_demo` is the minimal second adopter:
+
+- `led.toggle` flips the on-board status LED state.
+- `status_led.state` exposes `led_enabled`, `blink_enabled`, and `blink_period_ms`.
+- Parameter support covers:
+  - `led.enabled`
+  - `blink.enabled`
+  - `blink.period_ms`

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from hexapod_dashboard.messages import (
+from devlink_dashboard.messages import (
     CapabilitiesMessage,
     CmdMessage,
     HelloMessage,
@@ -17,7 +17,7 @@ from hexapod_dashboard.messages import (
 class MessageTests(unittest.TestCase):
     def test_parse_hello(self) -> None:
         message = parse_line(
-            '{"type":"hello","version":1,"device":"leg","protocol":"hexapod.serial","firmware":"0.1.0"}'
+            '{"type":"hello","version":1,"device":"leg","protocol":"devlink","firmware":"0.1.0"}'
         )
         self.assertIsInstance(message, HelloMessage)
         self.assertEqual(message.device, "leg")
@@ -52,6 +52,27 @@ class MessageTests(unittest.TestCase):
                 '{"type":"sample","version":1,"device":"leg","stream":"leg.position","seq":1,"t_us":10,'
                 '"data":{"nested":{"bad":true}}}'
             )
+
+    def test_parse_bool_param_and_bool_sample(self) -> None:
+        message = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.state","fields":['
+            '{"name":"led_enabled","type":"bool","unit":"state"},'
+            '{"name":"blink_period_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[{"name":"blink.enabled","type":"bool","access":"rw","default":true},'
+            '{"name":"blink.period_ms","type":"u32","access":"rw","default":250,"min":10,"max":2000}]}'
+        )
+        self.assertIsInstance(message, CapabilitiesMessage)
+        self.assertEqual(message.params[0].default, True)
+        self.assertEqual(message.params[1].default, 250)
+
+        sample = parse_line(
+            '{"type":"sample","version":1,"device":"status_led","stream":"status_led.state","seq":2,"t_us":50,'
+            '"data":{"led_enabled":true,"blink_period_ms":500}}'
+        )
+        self.assertIsInstance(sample, SampleMessage)
+        self.assertEqual(sample.data["led_enabled"], True)
+        self.assertEqual(sample.data["blink_period_ms"], 500)
 
     def test_unknown_type_rejected(self) -> None:
         with self.assertRaises(ProtocolError):

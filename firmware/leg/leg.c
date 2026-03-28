@@ -1,13 +1,11 @@
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
 #include "adc_pot.h"
-#include "hexapod_serial.h"
+#include "devlink_serial.h"
 #include "motor_pwm.h"
 #include "pio_uart_rx.h"
 #include "telemetry.h"
@@ -34,7 +32,6 @@
 #define POSITION_HOLD_DEADBAND_ADC 60u
 #define POSITION_P_MIN_OUTPUT_PCT 20u
 #define POSITION_P_MAX_OUTPUT_PCT 60u
-// P controller output = min_output + |position error| / POSITION_P_ERROR_TO_OUTPUT_DIVISOR.
 #define POSITION_P_ERROR_TO_OUTPUT_DIVISOR 16u
 #define CMD_BUFFER_LEN 256u
 #define CMD_IDLE_FLUSH_MS 80u
@@ -42,8 +39,6 @@
 #define RX_LED_PULSE_MS 40u
 #define COMMAND_RX_GPIO 3u
 #define COMMAND_BAUD 115200u
-#define DEVICE_ID "leg"
-#define FIRMWARE_VERSION "0.1.0"
 #define STREAM_POSITION "leg.position"
 
 typedef struct {
@@ -59,34 +54,12 @@ typedef struct {
 } MotorBank;
 
 typedef struct {
-    char data[CMD_BUFFER_LEN];
-    uint32_t len;
-    bool overflowed;
-    absolute_time_t flush_at;
-} UartLineBuffer;
-
-typedef struct {
     uint16_t setpoint_adc;
     uint16_t deadband_adc;
     uint8_t min_output_pct;
     uint8_t max_output_pct;
     uint16_t error_to_output_divisor;
 } PositionControlConfig;
-
-typedef struct {
-    const char *name;
-    const char *type;
-    const char *access;
-    int32_t default_value;
-    int32_t min_value;
-    int32_t max_value;
-} ParamMetadata;
-
-typedef enum {
-    UART_READ_NONE = 0,
-    UART_READ_LINE,
-    UART_READ_OVERFLOW
-} UartReadStatus;
 
 typedef struct {
     bool active;
@@ -103,34 +76,135 @@ typedef struct {
     Telemetry sample_timer;
 } PositionHoldDemo;
 
+typedef struct {
+    PositionControlConfig config;
+    PositionHoldDemo demo;
+} LegAppContext;
+
 enum {
     PARAM_SETPOINT_ADC = 0,
     PARAM_DEADBAND_ADC,
     PARAM_MIN_OUTPUT_PCT,
     PARAM_MAX_OUTPUT_PCT,
     PARAM_ERROR_TO_OUTPUT_DIVISOR,
-    PARAM_COUNT
-};
-
-static const ParamMetadata g_param_metadata[PARAM_COUNT] = {
-    {"control.setpoint_adc", "u16", "rw", POSITION_SETPOINT_ADC, 0, ADC_POT_MAX_RAW},
-    {"control.deadband_adc", "u16", "rw", POSITION_HOLD_DEADBAND_ADC, 0, ADC_POT_MAX_RAW},
-    {"control.min_output_pct", "u8", "rw", POSITION_P_MIN_OUTPUT_PCT, 0, 100},
-    {"control.max_output_pct", "u8", "rw", POSITION_P_MAX_OUTPUT_PCT, 0, 100},
-    {
-        "control.error_to_output_divisor",
-        "u16",
-        "rw",
-        POSITION_P_ERROR_TO_OUTPUT_DIVISOR,
-        1,
-        ADC_POT_MAX_RAW
-    },
 };
 
 static AdcBank g_adc_bank;
 static MotorBank g_motor_bank;
 static bool g_rx_led_active;
 static absolute_time_t g_rx_led_deadline;
+
+static DevlinkSerialCommandStatus handle_demo_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_demo_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static bool leg_param_get(
+    void *context,
+    const DevlinkSerialParamDescriptor *param,
+    DevlinkSerialValue *out_value
+);
+static bool leg_param_set(
+    void *context,
+    const DevlinkSerialParamDescriptor *param,
+    DevlinkSerialValue value,
+    const char **out_error_code,
+    const char **out_error_message
+);
+
+static const DevlinkSerialStreamFieldDescriptor g_position_stream_fields[] = {
+    {"setpoint_adc", DEVLINK_SERIAL_TYPE_U16, "adc"},
+    {"measured_adc", DEVLINK_SERIAL_TYPE_U16, "adc"},
+    {"control_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
+};
+
+static const DevlinkSerialStreamDescriptor g_leg_streams[] = {
+    {STREAM_POSITION, g_position_stream_fields, count_of(g_position_stream_fields)},
+};
+
+static const DevlinkSerialParamDescriptor g_leg_params[] = {
+    {
+        "control.setpoint_adc",
+        DEVLINK_SERIAL_TYPE_U16,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U16(POSITION_SETPOINT_ADC),
+        true,
+        DEVLINK_SERIAL_VALUE_U16(0),
+        DEVLINK_SERIAL_VALUE_U16(ADC_POT_MAX_RAW),
+        PARAM_SETPOINT_ADC,
+    },
+    {
+        "control.deadband_adc",
+        DEVLINK_SERIAL_TYPE_U16,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U16(POSITION_HOLD_DEADBAND_ADC),
+        true,
+        DEVLINK_SERIAL_VALUE_U16(0),
+        DEVLINK_SERIAL_VALUE_U16(ADC_POT_MAX_RAW),
+        PARAM_DEADBAND_ADC,
+    },
+    {
+        "control.min_output_pct",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(POSITION_P_MIN_OUTPUT_PCT),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(0),
+        DEVLINK_SERIAL_VALUE_U8(100),
+        PARAM_MIN_OUTPUT_PCT,
+    },
+    {
+        "control.max_output_pct",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(POSITION_P_MAX_OUTPUT_PCT),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(0),
+        DEVLINK_SERIAL_VALUE_U8(100),
+        PARAM_MAX_OUTPUT_PCT,
+    },
+    {
+        "control.error_to_output_divisor",
+        DEVLINK_SERIAL_TYPE_U16,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U16(POSITION_P_ERROR_TO_OUTPUT_DIVISOR),
+        true,
+        DEVLINK_SERIAL_VALUE_U16(1),
+        DEVLINK_SERIAL_VALUE_U16(ADC_POT_MAX_RAW),
+        PARAM_ERROR_TO_OUTPUT_DIVISOR,
+    },
+};
+
+static const DevlinkSerialCommandDescriptor g_leg_commands[] = {
+    {"demo.start", NULL, 0u, handle_demo_start, "demo.started", "info"},
+    {"demo.stop", NULL, 0u, handle_demo_stop, "demo.stopped", "info"},
+};
+
+static const DevlinkSerialDeviceDescriptor g_leg_device = {
+    .device = "leg",
+    .firmware = "0.1.0",
+    .commands = g_leg_commands,
+    .command_count = count_of(g_leg_commands),
+    .streams = g_leg_streams,
+    .stream_count = count_of(g_leg_streams),
+    .params = g_leg_params,
+    .param_count = count_of(g_leg_params),
+    .param_getter = leg_param_get,
+    .param_setter = leg_param_set,
+};
 
 static void init_adc_bank(AdcBank *bank) {
     adc_pot_system_init();
@@ -173,92 +247,6 @@ static void rx_led_tick(void) {
     }
 }
 
-static void uart_line_buffer_reset(UartLineBuffer *buffer) {
-    hard_assert(buffer != NULL);
-
-    buffer->len = 0u;
-    buffer->overflowed = false;
-    buffer->flush_at = make_timeout_time_ms(CMD_IDLE_FLUSH_MS);
-}
-
-static UartReadStatus uart_try_read_line(
-    PioUartRx *command_rx,
-    UartLineBuffer *buffer,
-    char *out_line,
-    uint32_t out_line_size
-) {
-    hard_assert(command_rx != NULL);
-    hard_assert(buffer != NULL);
-    hard_assert(out_line != NULL);
-    hard_assert(out_line_size > 0u);
-
-    uint8_t received_byte = 0u;
-    while (pio_uart_rx_try_getc(command_rx, &received_byte)) {
-        int ch = (int)received_byte;
-        rx_led_note_byte();
-
-        if (ch == '\r' || ch == '\n') {
-            if (buffer->overflowed) {
-                uart_line_buffer_reset(buffer);
-                return UART_READ_OVERFLOW;
-            }
-            if (buffer->len > 0u) {
-                uint32_t copy_len = buffer->len;
-                if (copy_len >= out_line_size) {
-                    copy_len = out_line_size - 1u;
-                }
-                memcpy(out_line, buffer->data, copy_len);
-                out_line[copy_len] = '\0';
-                uart_line_buffer_reset(buffer);
-                return UART_READ_LINE;
-            }
-            continue;
-        }
-
-        if (ch == 8 || ch == 127) {
-            if (!buffer->overflowed && buffer->len > 0u) {
-                buffer->len--;
-            }
-            buffer->flush_at = make_timeout_time_ms(CMD_IDLE_FLUSH_MS);
-            continue;
-        }
-
-        if (ch < 32 || ch > 126) {
-            continue;
-        }
-
-        if (buffer->overflowed) {
-            continue;
-        }
-
-        if (buffer->len >= (CMD_BUFFER_LEN - 1u)) {
-            buffer->overflowed = true;
-            continue;
-        }
-
-        buffer->data[buffer->len++] = (char)ch;
-        buffer->flush_at = make_timeout_time_ms(CMD_IDLE_FLUSH_MS);
-    }
-
-    if ((buffer->len > 0u || buffer->overflowed) && time_reached(buffer->flush_at)) {
-        if (buffer->overflowed) {
-            uart_line_buffer_reset(buffer);
-            return UART_READ_OVERFLOW;
-        }
-
-        uint32_t copy_len = buffer->len;
-        if (copy_len >= out_line_size) {
-            copy_len = out_line_size - 1u;
-        }
-        memcpy(out_line, buffer->data, copy_len);
-        out_line[copy_len] = '\0';
-        uart_line_buffer_reset(buffer);
-        return UART_READ_LINE;
-    }
-
-    return UART_READ_NONE;
-}
-
 static void position_control_config_init_defaults(PositionControlConfig *config) {
     hard_assert(config != NULL);
 
@@ -267,162 +255,6 @@ static void position_control_config_init_defaults(PositionControlConfig *config)
     config->min_output_pct = POSITION_P_MIN_OUTPUT_PCT;
     config->max_output_pct = POSITION_P_MAX_OUTPUT_PCT;
     config->error_to_output_divisor = POSITION_P_ERROR_TO_OUTPUT_DIVISOR;
-}
-
-static int find_param_index(const char *param_name) {
-    hard_assert(param_name != NULL);
-
-    for (int i = 0; i < PARAM_COUNT; i++) {
-        if (strcmp(param_name, g_param_metadata[i].name) == 0) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
-static int32_t read_param_value_by_index(const PositionControlConfig *config, int param_index) {
-    hard_assert(config != NULL);
-
-    switch (param_index) {
-        case PARAM_SETPOINT_ADC:
-            return config->setpoint_adc;
-        case PARAM_DEADBAND_ADC:
-            return config->deadband_adc;
-        case PARAM_MIN_OUTPUT_PCT:
-            return config->min_output_pct;
-        case PARAM_MAX_OUTPUT_PCT:
-            return config->max_output_pct;
-        case PARAM_ERROR_TO_OUTPUT_DIVISOR:
-            return config->error_to_output_divisor;
-        default:
-            return 0;
-    }
-}
-
-static bool set_param_value_by_index(
-    PositionControlConfig *config,
-    int param_index,
-    int32_t value,
-    const char **out_error_code,
-    const char **out_error_message
-) {
-    hard_assert(config != NULL);
-    hard_assert(out_error_code != NULL);
-    hard_assert(out_error_message != NULL);
-
-    *out_error_code = NULL;
-    *out_error_message = NULL;
-
-    if (value < g_param_metadata[param_index].min_value || value > g_param_metadata[param_index].max_value) {
-        *out_error_code = "value_out_of_range";
-        *out_error_message = "param value outside allowed range";
-        return false;
-    }
-
-    switch (param_index) {
-        case PARAM_SETPOINT_ADC:
-            config->setpoint_adc = (uint16_t)value;
-            return true;
-        case PARAM_DEADBAND_ADC:
-            config->deadband_adc = (uint16_t)value;
-            return true;
-        case PARAM_MIN_OUTPUT_PCT:
-            if (value > config->max_output_pct) {
-                *out_error_code = "value_out_of_range";
-                *out_error_message = "min_output_pct must be <= max_output_pct";
-                return false;
-            }
-            config->min_output_pct = (uint8_t)value;
-            return true;
-        case PARAM_MAX_OUTPUT_PCT:
-            if (value < config->min_output_pct) {
-                *out_error_code = "value_out_of_range";
-                *out_error_message = "max_output_pct must be >= min_output_pct";
-                return false;
-            }
-            config->max_output_pct = (uint8_t)value;
-            return true;
-        case PARAM_ERROR_TO_OUTPUT_DIVISOR:
-            config->error_to_output_divisor = (uint16_t)value;
-            return true;
-        default:
-            *out_error_code = "unknown_param";
-            *out_error_message = "unknown parameter";
-            return false;
-    }
-}
-
-static void print_capabilities(void) {
-    printf(
-        "{\"type\":\"capabilities\",\"version\":%u,\"device\":\"%s\",\"commands\":[",
-        HEXAPOD_SERIAL_VERSION,
-        DEVICE_ID
-    );
-    printf("{\"name\":\"demo.start\",\"args\":[]},");
-    printf("{\"name\":\"demo.stop\",\"args\":[]},");
-    printf("{\"name\":\"param.list\",\"args\":[]},");
-    printf("{\"name\":\"param.get\",\"args\":[{\"name\":\"param\",\"type\":\"string\",\"required\":true}]},");
-    printf(
-        "{\"name\":\"param.set\",\"args\":["
-        "{\"name\":\"param\",\"type\":\"string\",\"required\":true},"
-        "{\"name\":\"value\",\"type\":\"integer\",\"required\":true}"
-        "]}"
-    );
-    printf("],\"streams\":[");
-    printf(
-        "{\"name\":\"%s\",\"fields\":["
-        "{\"name\":\"setpoint_adc\",\"type\":\"u16\",\"unit\":\"adc\"},"
-        "{\"name\":\"measured_adc\",\"type\":\"u16\",\"unit\":\"adc\"},"
-        "{\"name\":\"control_output_pct\",\"type\":\"i16\",\"unit\":\"pct\"}"
-        "]}",
-        STREAM_POSITION
-    );
-    printf("],\"params\":[");
-    for (int i = 0; i < PARAM_COUNT; i++) {
-        const ParamMetadata *metadata = &g_param_metadata[i];
-        printf(
-            "{\"name\":\"%s\",\"type\":\"%s\",\"access\":\"%s\",\"default\":%ld,\"min\":%ld,\"max\":%ld}%s",
-            metadata->name,
-            metadata->type,
-            metadata->access,
-            (long)metadata->default_value,
-            (long)metadata->min_value,
-            (long)metadata->max_value,
-            (i + 1 == PARAM_COUNT) ? "" : ","
-        );
-    }
-    printf("]}\r\n");
-}
-
-static void print_param_result(uint32_t id, const char *param_name, int32_t value) {
-    printf(
-        "{\"type\":\"resp\",\"version\":%u,\"device\":\"%s\",\"id\":%lu,\"ok\":true,"
-        "\"result\":{\"param\":\"%s\",\"value\":%ld}}\r\n",
-        HEXAPOD_SERIAL_VERSION,
-        DEVICE_ID,
-        (unsigned long)id,
-        param_name,
-        (long)value
-    );
-}
-
-static void print_param_list_result(uint32_t id, const PositionControlConfig *config) {
-    printf(
-        "{\"type\":\"resp\",\"version\":%u,\"device\":\"%s\",\"id\":%lu,\"ok\":true,\"result\":{\"params\":[",
-        HEXAPOD_SERIAL_VERSION,
-        DEVICE_ID,
-        (unsigned long)id
-    );
-    for (int i = 0; i < PARAM_COUNT; i++) {
-        printf(
-            "{\"name\":\"%s\",\"value\":%ld}%s",
-            g_param_metadata[i].name,
-            (long)read_param_value_by_index(config, i),
-            (i + 1 == PARAM_COUNT) ? "" : ","
-        );
-    }
-    printf("]}}\r\n");
 }
 
 static uint16_t position_compute_drive_duty(
@@ -477,22 +309,22 @@ static void position_hold_demo_start(PositionHoldDemo *demo, MotorPwm *motor_c, 
 }
 
 static void position_hold_demo_tick(
-    PositionHoldDemo *demo,
+    LegAppContext *app,
     MotorPwm *motor_c,
-    AdcPot *adc_c,
-    const PositionControlConfig *config
+    AdcPot *adc_c
 ) {
-    hard_assert(demo != NULL);
-    hard_assert(motor_c != NULL);
-    hard_assert(adc_c != NULL);
-    hard_assert(config != NULL);
+    DevlinkSerialValue values[count_of(g_position_stream_fields)];
+    PositionHoldDemo *demo = &app->demo;
+    const PositionControlConfig *config = &app->config;
+    uint16_t adc_c_raw = 0u;
+    uint64_t sample_us = 0u;
 
     if (!demo->active) {
         return;
     }
 
     if (time_reached(demo->ends_at)) {
-        hexapod_serial_print_event(DEVICE_ID, "demo.done", "info");
+        devlink_serial_print_event(&g_leg_device, "demo.done", "info");
         position_hold_demo_stop(demo, motor_c, adc_c);
         return;
     }
@@ -532,218 +364,234 @@ static void position_hold_demo_tick(
         demo->next_control_at = make_timeout_time_ms(POSITION_CONTROLLER_UPDATE_MS);
     }
 
-    uint16_t adc_c_raw = 0u;
-    uint64_t sample_us = 0u;
     if (!telemetry_try_sample_one(&demo->sample_timer, adc_c, &adc_c_raw, &sample_us)) {
         return;
     }
 
-    printf(
-        "{\"type\":\"sample\",\"version\":%u,\"device\":\"%s\",\"stream\":\"%s\",\"seq\":%lu,"
-        "\"t_us\":%llu,\"data\":{\"setpoint_adc\":%u,\"measured_adc\":%u,\"control_output_pct\":%d}}\r\n",
-        HEXAPOD_SERIAL_VERSION,
-        DEVICE_ID,
-        STREAM_POSITION,
-        (unsigned long)demo->sample_seq++,
-        (unsigned long long)sample_us,
-        demo->active_target_adc,
-        adc_c_raw,
-        demo->telemetry_drive_pct
+    values[0] = DEVLINK_SERIAL_VALUE_U16(demo->active_target_adc);
+    values[1] = DEVLINK_SERIAL_VALUE_U16(adc_c_raw);
+    values[2] = DEVLINK_SERIAL_VALUE_I16(demo->telemetry_drive_pct);
+    devlink_serial_print_sample(
+        &g_leg_device,
+        &g_leg_streams[0],
+        demo->sample_seq++,
+        sample_us,
+        values
     );
 }
 
-static void emit_parse_error(HexapodSerialParseStatus status) {
-    switch (status) {
-        case HEXAPOD_SERIAL_PARSE_INVALID_JSON:
-            hexapod_serial_print_event(DEVICE_ID, "protocol.invalid_json", "error");
-            break;
-        case HEXAPOD_SERIAL_PARSE_MISSING_FIELD:
-        case HEXAPOD_SERIAL_PARSE_WRONG_TYPE:
-            hexapod_serial_print_event(DEVICE_ID, "protocol.invalid_command", "error");
-            break;
-        case HEXAPOD_SERIAL_PARSE_UNSUPPORTED_VERSION:
-            hexapod_serial_print_event(DEVICE_ID, "protocol.unsupported_version", "error");
-            break;
-        case HEXAPOD_SERIAL_PARSE_BUFFER_TOO_SMALL:
-            hexapod_serial_print_event(DEVICE_ID, "protocol.command_too_large", "error");
-            break;
-        case HEXAPOD_SERIAL_PARSE_OK:
+static bool leg_param_get(
+    void *context,
+    const DevlinkSerialParamDescriptor *param,
+    DevlinkSerialValue *out_value
+) {
+    LegAppContext *app = (LegAppContext *)context;
+
+    hard_assert(app != NULL);
+    hard_assert(param != NULL);
+    hard_assert(out_value != NULL);
+
+    switch ((int)param->user_data) {
+        case PARAM_SETPOINT_ADC:
+            *out_value = DEVLINK_SERIAL_VALUE_U16(app->config.setpoint_adc);
+            return true;
+        case PARAM_DEADBAND_ADC:
+            *out_value = DEVLINK_SERIAL_VALUE_U16(app->config.deadband_adc);
+            return true;
+        case PARAM_MIN_OUTPUT_PCT:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->config.min_output_pct);
+            return true;
+        case PARAM_MAX_OUTPUT_PCT:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->config.max_output_pct);
+            return true;
+        case PARAM_ERROR_TO_OUTPUT_DIVISOR:
+            *out_value = DEVLINK_SERIAL_VALUE_U16(app->config.error_to_output_divisor);
+            return true;
         default:
-            break;
+            return false;
     }
 }
 
-static void handle_protocol_command(
-    const HexapodSerialCommand *command,
-    PositionHoldDemo *demo,
-    MotorPwm *motor_c,
-    AdcPot *adc_c,
-    PositionControlConfig *config
+static bool leg_param_set(
+    void *context,
+    const DevlinkSerialParamDescriptor *param,
+    DevlinkSerialValue value,
+    const char **out_error_code,
+    const char **out_error_message
 ) {
-    hard_assert(command != NULL);
-    hard_assert(demo != NULL);
-    hard_assert(motor_c != NULL);
-    hard_assert(adc_c != NULL);
-    hard_assert(config != NULL);
+    LegAppContext *app = (LegAppContext *)context;
 
-    if (strcmp(command->device, DEVICE_ID) != 0) {
-        hexapod_serial_print_resp_error(
-            DEVICE_ID,
-            command->id,
-            "wrong_device",
-            "command addressed to a different device"
+    hard_assert(app != NULL);
+    hard_assert(param != NULL);
+    hard_assert(out_error_code != NULL);
+    hard_assert(out_error_message != NULL);
+
+    *out_error_code = NULL;
+    *out_error_message = NULL;
+
+    switch ((int)param->user_data) {
+        case PARAM_SETPOINT_ADC:
+            app->config.setpoint_adc = (uint16_t)value.u32_value;
+            return true;
+        case PARAM_DEADBAND_ADC:
+            app->config.deadband_adc = (uint16_t)value.u32_value;
+            return true;
+        case PARAM_MIN_OUTPUT_PCT:
+            if (value.u32_value > app->config.max_output_pct) {
+                *out_error_code = "value_out_of_range";
+                *out_error_message = "min_output_pct must be <= max_output_pct";
+                return false;
+            }
+            app->config.min_output_pct = (uint8_t)value.u32_value;
+            return true;
+        case PARAM_MAX_OUTPUT_PCT:
+            if (value.u32_value < app->config.min_output_pct) {
+                *out_error_code = "value_out_of_range";
+                *out_error_message = "max_output_pct must be >= min_output_pct";
+                return false;
+            }
+            app->config.max_output_pct = (uint8_t)value.u32_value;
+            return true;
+        case PARAM_ERROR_TO_OUTPUT_DIVISOR:
+            app->config.error_to_output_divisor = (uint16_t)value.u32_value;
+            return true;
+        default:
+            *out_error_code = "unknown_param";
+            *out_error_message = "unknown parameter";
+            return false;
+    }
+}
+
+static DevlinkSerialCommandStatus handle_demo_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    LegAppContext *app = (LegAppContext *)context;
+
+    (void)device;
+    (void)command;
+    (void)out_result_json;
+    (void)out_result_json_size;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    position_hold_demo_start(&app->demo, &g_motor_bank.c, &g_adc_bank.c);
+    return DEVLINK_SERIAL_COMMAND_OK;
+}
+
+static DevlinkSerialCommandStatus handle_demo_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    LegAppContext *app = (LegAppContext *)context;
+
+    (void)device;
+    (void)command;
+    (void)out_result_json;
+    (void)out_result_json_size;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    position_hold_demo_stop(&app->demo, &g_motor_bank.c, &g_adc_bank.c);
+    return DEVLINK_SERIAL_COMMAND_OK;
+}
+
+static void poll_command_input(
+    PioUartRx *command_rx,
+    DevlinkSerialLineBuffer *line_buffer,
+    LegAppContext *app,
+    char *command_line,
+    size_t command_line_size
+) {
+    uint8_t received_byte = 0u;
+
+    while (pio_uart_rx_try_getc(command_rx, &received_byte)) {
+        DevlinkSerialLineReadStatus read_status = DEVLINK_SERIAL_LINE_NONE;
+
+        rx_led_note_byte();
+        read_status = devlink_serial_line_buffer_push(
+            line_buffer,
+            (int)received_byte,
+            command_line,
+            command_line_size
         );
-        return;
-    }
 
-    if (strcmp(command->name, "demo.start") == 0) {
-        position_hold_demo_start(demo, motor_c, adc_c);
-        hexapod_serial_print_resp_ok(DEVICE_ID, command->id);
-        hexapod_serial_print_event(DEVICE_ID, "demo.started", "info");
-        return;
-    }
-
-    if (strcmp(command->name, "demo.stop") == 0) {
-        position_hold_demo_stop(demo, motor_c, adc_c);
-        hexapod_serial_print_resp_ok(DEVICE_ID, command->id);
-        hexapod_serial_print_event(DEVICE_ID, "demo.stopped", "info");
-        return;
-    }
-
-    if (strcmp(command->name, "param.list") == 0) {
-        print_param_list_result(command->id, config);
-        return;
-    }
-
-    if (strcmp(command->name, "param.get") == 0) {
-        char param_name[48] = {0};
-        int param_index = -1;
-
-        if (!hexapod_serial_json_get_string(command->args_json, "param", param_name, sizeof(param_name))) {
-            hexapod_serial_print_resp_error(
-                DEVICE_ID,
-                command->id,
-                "invalid_args",
-                "param argument required"
-            );
-            return;
+        if (read_status == DEVLINK_SERIAL_LINE_READY) {
+            devlink_serial_handle_command_line(&g_leg_device, app, command_line);
+        } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
+            devlink_serial_print_event(&g_leg_device, "protocol.line_too_long", "error");
         }
-
-        param_index = find_param_index(param_name);
-        if (param_index < 0) {
-            hexapod_serial_print_resp_error(
-                DEVICE_ID,
-                command->id,
-                "unknown_param",
-                "parameter not found"
-            );
-            return;
-        }
-
-        print_param_result(command->id, param_name, read_param_value_by_index(config, param_index));
-        return;
     }
 
-    if (strcmp(command->name, "param.set") == 0) {
-        char param_name[48] = {0};
-        int32_t value = 0;
-        int param_index = -1;
-        const char *error_code = NULL;
-        const char *error_message = NULL;
+    {
+        DevlinkSerialLineReadStatus read_status = devlink_serial_line_buffer_flush_if_idle(
+            line_buffer,
+            command_line,
+            command_line_size
+        );
 
-        if (!hexapod_serial_json_get_string(command->args_json, "param", param_name, sizeof(param_name)) ||
-            !hexapod_serial_json_get_int32(command->args_json, "value", &value)) {
-            hexapod_serial_print_resp_error(
-                DEVICE_ID,
-                command->id,
-                "invalid_args",
-                "param and integer value required"
-            );
-            return;
+        if (read_status == DEVLINK_SERIAL_LINE_READY) {
+            devlink_serial_handle_command_line(&g_leg_device, app, command_line);
+        } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
+            devlink_serial_print_event(&g_leg_device, "protocol.line_too_long", "error");
         }
-
-        param_index = find_param_index(param_name);
-        if (param_index < 0) {
-            hexapod_serial_print_resp_error(
-                DEVICE_ID,
-                command->id,
-                "unknown_param",
-                "parameter not found"
-            );
-            return;
-        }
-
-        if (!set_param_value_by_index(config, param_index, value, &error_code, &error_message)) {
-            hexapod_serial_print_resp_error(DEVICE_ID, command->id, error_code, error_message);
-            return;
-        }
-
-        print_param_result(command->id, param_name, read_param_value_by_index(config, param_index));
-        return;
     }
-
-    hexapod_serial_print_resp_error(DEVICE_ID, command->id, "unknown_command", "command not supported");
 }
 
 int main(void) {
+    PioUartRx command_rx = {0};
+    LegAppContext app = {0};
+    DevlinkSerialLineBuffer command_buffer = {0};
+    char command_line[CMD_BUFFER_LEN] = {0};
+
     stdio_init_all();
     init_status_led();
     sleep_ms(1200u);
     init_adc_bank(&g_adc_bank);
     init_motor_bank(&g_motor_bank);
 
-    PioUartRx command_rx = {0};
     if (!pio_uart_rx_init(&command_rx, pio0, COMMAND_RX_GPIO, COMMAND_BAUD)) {
-        hexapod_serial_print_log(DEVICE_ID, "error", "pio rx init failed");
+        devlink_serial_print_log(&g_leg_device, "error", "pio rx init failed");
         while (true) {
             rx_led_tick();
             tight_loop_contents();
         }
     }
 
-    PositionControlConfig config = {0};
-    PositionHoldDemo demo = {0};
-    UartLineBuffer command_buffer = {0};
-    char command_line[CMD_BUFFER_LEN] = {0};
+    position_control_config_init_defaults(&app.config);
+    devlink_serial_line_buffer_init(
+        &command_buffer,
+        command_line,
+        sizeof(command_line),
+        CMD_IDLE_FLUSH_MS
+    );
 
-    position_control_config_init_defaults(&config);
-    uart_line_buffer_reset(&command_buffer);
+    devlink_serial_print_hello(&g_leg_device);
+    devlink_serial_print_capabilities(&g_leg_device);
+    devlink_serial_print_event(&g_leg_device, "device.ready", "info");
 
-    hexapod_serial_print_hello(DEVICE_ID, FIRMWARE_VERSION);
-    print_capabilities();
-    hexapod_serial_print_event(DEVICE_ID, "device.ready", "info");
-
-    position_hold_demo_start(&demo, &g_motor_bank.c, &g_adc_bank.c);
-    hexapod_serial_print_event(DEVICE_ID, "demo.started", "info");
+    position_hold_demo_start(&app.demo, &g_motor_bank.c, &g_adc_bank.c);
+    devlink_serial_print_event(&g_leg_device, "demo.started", "info");
 
     while (true) {
-        UartReadStatus read_status = uart_try_read_line(
+        poll_command_input(
             &command_rx,
             &command_buffer,
+            &app,
             command_line,
-            CMD_BUFFER_LEN
+            sizeof(command_line)
         );
-
-        if (read_status == UART_READ_OVERFLOW) {
-            hexapod_serial_print_event(DEVICE_ID, "protocol.line_too_long", "error");
-        } else if (read_status == UART_READ_LINE) {
-            HexapodSerialCommand command = {0};
-            HexapodSerialParseStatus parse_status = hexapod_serial_parse_command(command_line, &command);
-
-            if (parse_status == HEXAPOD_SERIAL_PARSE_OK) {
-                handle_protocol_command(
-                    &command,
-                    &demo,
-                    &g_motor_bank.c,
-                    &g_adc_bank.c,
-                    &config
-                );
-            } else {
-                emit_parse_error(parse_status);
-            }
-        }
-
-        position_hold_demo_tick(&demo, &g_motor_bank.c, &g_adc_bank.c, &config);
+        position_hold_demo_tick(&app, &g_motor_bank.c, &g_adc_bank.c);
         rx_led_tick();
         tight_loop_contents();
     }
