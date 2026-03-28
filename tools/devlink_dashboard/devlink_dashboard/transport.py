@@ -12,6 +12,12 @@ class SerialUnavailableError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class SerialPortInfo:
+    device: str
+    description: str
+
+
 class SerialTransport:
     def __init__(self, port: str, baud: int = 115200, timeout: float = 0.1) -> None:
         self.port = port
@@ -63,7 +69,7 @@ class SerialTransport:
         self.close()
 
 
-def list_serial_ports() -> list[str]:
+def list_serial_port_infos() -> list[SerialPortInfo]:
     SerialTransport._require_serial()
     try:
         from serial.tools import list_ports  # type: ignore[import-not-found]
@@ -71,7 +77,17 @@ def list_serial_ports() -> list[str]:
         raise SerialUnavailableError(
             "pyserial is required for live serial transport; install tools/devlink_dashboard[serial]"
         ) from exc
-    return [port.device for port in list_ports.comports()]
+    return [
+        SerialPortInfo(
+            device=port.device,
+            description=getattr(port, "description", "") or "",
+        )
+        for port in list_ports.comports()
+    ]
+
+
+def list_serial_ports() -> list[str]:
+    return [port.device for port in list_serial_port_infos()]
 
 
 @dataclass

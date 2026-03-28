@@ -576,8 +576,7 @@ int main(void) {
         CMD_IDLE_FLUSH_MS
     );
 
-    devlink_serial_print_hello(&g_leg_device);
-    devlink_serial_print_capabilities(&g_leg_device);
+    devlink_serial_print_discovery(&g_leg_device);
     devlink_serial_print_event(&g_leg_device, "device.ready", "info");
 
     position_hold_demo_start(&app.demo, &g_motor_bank.c, &g_adc_bank.c);

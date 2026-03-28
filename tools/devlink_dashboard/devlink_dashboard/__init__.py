@@ -17,6 +17,7 @@ from .messages import (
 )
 from .model import DashboardState, DeviceModel
 from .session import JsonlRecorder, iter_recorded_lines, iter_recorded_messages
+from .transport import SerialPortInfo, SerialTransport, list_serial_port_infos, list_serial_ports
 
 __all__ = [
     "CapabilitiesMessage",
@@ -32,11 +33,15 @@ __all__ = [
     "ParamSpec",
     "ProtocolError",
     "RespMessage",
+    "SerialPortInfo",
+    "SerialTransport",
     "SampleMessage",
     "StreamSpec",
     "build_cmd_message",
     "iter_recorded_lines",
     "iter_recorded_messages",
+    "list_serial_port_infos",
+    "list_serial_ports",
     "parse_line",
     "serialize_message",
 ]

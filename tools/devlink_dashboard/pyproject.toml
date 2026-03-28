@@ -7,6 +7,7 @@ dependencies = []
 
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]
+gui = ["pyserial>=3.5", "PySide6>=6.6", "pyqtgraph>=0.13"]
 
 [project.scripts]
 devlink-dashboard = "devlink_dashboard.cli:main"

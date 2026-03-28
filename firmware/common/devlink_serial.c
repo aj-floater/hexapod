@@ -637,6 +637,20 @@ static bool handle_param_command(
     return false;
 }
 
+static bool handle_builtin_command(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command
+) {
+    if (strcmp(command->name, "device.describe") == 0) {
+        devlink_serial_print_discovery(device);
+        devlink_serial_print_resp_ok(device, command->id);
+        return true;
+    }
+
+    return handle_param_command(device, context, command);
+}
+
 void devlink_serial_line_buffer_init(
     DevlinkSerialLineBuffer *buffer,
     char *storage,
@@ -775,10 +789,13 @@ void devlink_serial_print_capabilities(const DevlinkSerialDeviceDescriptor *devi
                 (arg_index + 1u == command->arg_count) ? "" : ","
             );
         }
-        printf("]}");
-        if (i + 1u < device->command_count || device_supports_params(device)) {
-            printf(",");
-        }
+        printf("]},");
+    }
+
+    printf("{\"name\":\"device.describe\",\"args\":[]}");
+
+    if (device_supports_params(device)) {
+        printf(",");
     }
 
     if (device_supports_params(device)) {
@@ -830,6 +847,11 @@ void devlink_serial_print_capabilities(const DevlinkSerialDeviceDescriptor *devi
         printf("}%s", (i + 1u == device->param_count) ? "" : ",");
     }
     printf("]}\r\n");
+}
+
+void devlink_serial_print_discovery(const DevlinkSerialDeviceDescriptor *device) {
+    devlink_serial_print_hello(device);
+    devlink_serial_print_capabilities(device);
 }
 
 void devlink_serial_print_event(
@@ -1036,7 +1058,10 @@ void devlink_serial_handle_command_line(
         return;
     }
 
-    if (strcmp(command.device, device->device) != 0) {
+    if (
+        strcmp(command.device, device->device) != 0 &&
+        !(strcmp(command.name, "device.describe") == 0 && strcmp(command.device, "*") == 0)
+    ) {
         devlink_serial_print_resp_error(
             device,
             command.id,
@@ -1046,7 +1071,7 @@ void devlink_serial_handle_command_line(
         return;
     }
 
-    if (handle_param_command(device, context, &command)) {
+    if (handle_builtin_command(device, context, &command)) {
         return;
     }
 

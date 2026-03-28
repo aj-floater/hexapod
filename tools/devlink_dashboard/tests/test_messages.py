@@ -46,6 +46,18 @@ class MessageTests(unittest.TestCase):
         self.assertEqual(parsed.id, 7)
         self.assertEqual(parsed.args["value"], 2500)
 
+    def test_bootstrap_cmd_allows_wildcard_device(self) -> None:
+        original = build_cmd_message(
+            device="*",
+            command_id=10,
+            name="device.describe",
+            args={},
+        )
+        parsed = parse_line(serialize_message(original))
+        self.assertIsInstance(parsed, CmdMessage)
+        self.assertEqual(parsed.device, "*")
+        self.assertEqual(parsed.name, "device.describe")
+
     def test_sample_requires_scalar_fields(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_line(

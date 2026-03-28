@@ -340,8 +340,7 @@ int main(void) {
         CMD_IDLE_FLUSH_MS
     );
 
-    devlink_serial_print_hello(&g_status_led_device);
-    devlink_serial_print_capabilities(&g_status_led_device);
+    devlink_serial_print_discovery(&g_status_led_device);
     devlink_serial_print_event(&g_status_led_device, "device.ready", "info");
 
     while (true) {

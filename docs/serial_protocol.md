@@ -23,6 +23,10 @@ Every message must include:
 - `version`: protocol version, fixed to integer `1`
 - `device`: stable device identifier, for example `leg`
 
+Bootstrap exception:
+
+- Reserved discovery commands may use `device:"*"` when the host has not yet learned the real device id for the serial port.
+
 ## Message Families
 
 ### `hello`
@@ -85,6 +89,7 @@ Host-to-device command. Every `cmd` must produce exactly one `resp`.
 {"type":"cmd","version":1,"device":"leg","id":7,"name":"demo.start","args":{}}
 {"type":"cmd","version":1,"device":"leg","id":8,"name":"param.get","args":{"param":"control.setpoint_adc"}}
 {"type":"cmd","version":1,"device":"leg","id":9,"name":"param.set","args":{"param":"control.setpoint_adc","value":2450}}
+{"type":"cmd","version":1,"device":"*","id":10,"name":"device.describe","args":{}}
 ```
 
 Fields:
@@ -92,6 +97,11 @@ Fields:
 - `id`: integer request identifier
 - `name`: stable dotted command name
 - `args`: JSON object, empty if no arguments
+
+Reserved shared commands:
+
+- `device.describe`: asks the device to re-emit `hello` and `capabilities` for late-attaching hosts, then complete with a normal `resp`
+- `param.list`, `param.get`, and `param.set`: shared parameter commands provided by the firmware helper
 
 ### `resp`
 
@@ -171,12 +181,14 @@ Fields:
 - Unknown parameters return `error.code="unknown_param"`.
 - Rejected values return `error.code="value_out_of_range"`.
 - Malformed or oversized lines may not have a usable command `id`; they should be surfaced as `event` or `log` messages such as `protocol.invalid_json` or `protocol.line_too_long`.
+- `device.describe` addressed to `device:"*"` is valid only for bootstrap discovery. Other commands sent to `*` should be rejected as `wrong_device`.
 
 ## Host Guidance
 
 - Hosts should record raw NDJSON lines verbatim and parse them later.
 - Hosts should auto-build generic plots from `capabilities.streams` and numeric `sample.data` fields.
 - Hosts should treat `capabilities` as the schema source and `resp` messages as the mutable state source for parameters.
+- Hosts should send `device.describe` after opening a live serial port so they can recover metadata even when they attach after boot.
 
 ## Firmware Integration
 
@@ -186,6 +198,7 @@ Firmware targets should reuse the shared Pico helper in `firmware/common/devlink
 - Describe the device with static descriptor tables for commands, streams, and params.
 - Use the shared line buffer to assemble newline-delimited commands from UART or `stdio` input.
 - Reserve `param.list`, `param.get`, and `param.set` for the shared library; targets only provide param descriptors plus get/set callbacks.
+- Reserve `device.describe` for the shared library; it should re-emit the discovery sequence without target-specific code.
 - Keep target logic in local callbacks and state structs; the shared helper owns `hello`, `capabilities`, `resp`, `event`, `log`, and `sample` formatting.
 
 ## v1 Reference Target
