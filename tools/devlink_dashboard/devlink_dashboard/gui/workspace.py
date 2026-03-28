@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from PySide6.QtCore import QStandardPaths
+
+LAYOUT_VERSION = 1
+DEFAULT_X_GROUP = "main"
+DEFAULT_TRACE_COLORS = (
+    "#0b84f3",
+    "#f39c12",
+    "#19b36b",
+    "#d64550",
+    "#8a5cf6",
+    "#00a4a6",
+)
+
+
+@dataclass(frozen=True)
+class PlotTrace:
+    stream: str
+    field: str
+    color: str
+    visible: bool = True
+    label: str | None = None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.stream, self.field)
+
+    @property
+    def display_label(self) -> str:
+        return self.label or f"{self.stream}.{self.field}"
+
+
+@dataclass(frozen=True)
+class PlotPane:
+    id: str
+    title: str
+    x_group: str = DEFAULT_X_GROUP
+    traces: tuple[PlotTrace, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class PlotWorkspace:
+    device: str
+    panes: tuple[PlotPane, ...]
+    active_pane_id: str | None = None
+    version: int = LAYOUT_VERSION
+
+
+def default_trace_color(index: int) -> str:
+    return DEFAULT_TRACE_COLORS[index % len(DEFAULT_TRACE_COLORS)]
+
+
+def _sanitize_device_name(device: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", device).strip("._")
+    return sanitized or "device"
+
+
+def default_workspace_root() -> Path:
+    root = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppConfigLocation)
+    if not root:
+        return Path.home() / ".config" / "devlink_dashboard" / "workspaces"
+    path = Path(root)
+    if path.name == ".config":
+        path = path / "devlink_dashboard"
+    return path / "workspaces"
+
+
+def workspace_to_dict(workspace: PlotWorkspace) -> dict[str, object]:
+    return {
+        "version": workspace.version,
+        "device": workspace.device,
+        "active_pane_id": workspace.active_pane_id,
+        "panes": [
+            {
+                "id": pane.id,
+                "title": pane.title,
+                "x_group": pane.x_group,
+                "traces": [
+                    {
+                        "stream": trace.stream,
+                        "field": trace.field,
+                        "color": trace.color,
+                        "visible": trace.visible,
+                        "label": trace.label,
+                    }
+                    for trace in pane.traces
+                ],
+            }
+            for pane in workspace.panes
+        ],
+    }
+
+
+def workspace_from_dict(raw: object, *, device: str | None = None) -> PlotWorkspace:
+    if not isinstance(raw, dict):
+        raise ValueError("workspace payload must be an object")
+
+    version = raw.get("version", LAYOUT_VERSION)
+    if not isinstance(version, int):
+        raise ValueError("workspace version must be an integer")
+    if version != LAYOUT_VERSION:
+        raise ValueError(f"unsupported workspace version {version}")
+
+    resolved_device = device or raw.get("device")
+    if not isinstance(resolved_device, str) or not resolved_device:
+        raise ValueError("workspace device must be a string")
+
+    active_pane_id = raw.get("active_pane_id")
+    if active_pane_id is not None and not isinstance(active_pane_id, str):
+        raise ValueError("active_pane_id must be a string or null")
+
+    panes_raw = raw.get("panes")
+    if not isinstance(panes_raw, list):
+        raise ValueError("panes must be a list")
+
+    panes: list[PlotPane] = []
+    for pane_raw in panes_raw:
+        if not isinstance(pane_raw, dict):
+            raise ValueError("pane must be an object")
+        pane_id = pane_raw.get("id")
+        title = pane_raw.get("title")
+        x_group = pane_raw.get("x_group", DEFAULT_X_GROUP)
+        traces_raw = pane_raw.get("traces", [])
+        if not isinstance(pane_id, str) or not pane_id:
+            raise ValueError("pane id must be a string")
+        if not isinstance(title, str):
+            raise ValueError("pane title must be a string")
+        if not isinstance(x_group, str) or not x_group:
+            raise ValueError("pane x_group must be a string")
+        if not isinstance(traces_raw, list):
+            raise ValueError("pane traces must be a list")
+
+        traces: list[PlotTrace] = []
+        for trace_raw in traces_raw:
+            if not isinstance(trace_raw, dict):
+                raise ValueError("trace must be an object")
+            stream = trace_raw.get("stream")
+            field = trace_raw.get("field")
+            color = trace_raw.get("color")
+            visible = trace_raw.get("visible", True)
+            label = trace_raw.get("label")
+            if not isinstance(stream, str) or not stream:
+                raise ValueError("trace stream must be a string")
+            if not isinstance(field, str) or not field:
+                raise ValueError("trace field must be a string")
+            if not isinstance(color, str) or not color:
+                raise ValueError("trace color must be a string")
+            if not isinstance(visible, bool):
+                raise ValueError("trace visible must be a boolean")
+            if label is not None and not isinstance(label, str):
+                raise ValueError("trace label must be a string or null")
+            traces.append(
+                PlotTrace(
+                    stream=stream,
+                    field=field,
+                    color=color,
+                    visible=visible,
+                    label=label,
+                )
+            )
+
+        panes.append(
+            PlotPane(
+                id=pane_id,
+                title=title,
+                x_group=x_group,
+                traces=tuple(traces),
+            )
+        )
+
+    return PlotWorkspace(
+        version=version,
+        device=resolved_device,
+        panes=tuple(panes),
+        active_pane_id=active_pane_id,
+    )
+
+
+class WorkspaceStore:
+    def __init__(self, root_dir: Path | None = None) -> None:
+        self._root_dir = root_dir or default_workspace_root()
+
+    def path_for_device(self, device: str) -> Path:
+        return self._root_dir / f"{_sanitize_device_name(device)}.json"
+
+    def load(self, device: str) -> PlotWorkspace | None:
+        path = self.path_for_device(device)
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        return workspace_from_dict(raw, device=device)
+
+    def save(self, workspace: PlotWorkspace) -> None:
+        path = self.path_for_device(workspace.device)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = workspace_to_dict(workspace)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

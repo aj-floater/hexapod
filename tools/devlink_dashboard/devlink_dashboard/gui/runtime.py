@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
-from ..messages import JSONScalar, Message, ParamSpec, SampleMessage, StreamSpec
+from ..messages import JSONScalar, Message, ParamSpec, SampleMessage, StreamFieldSpec, StreamSpec
 from ..model import DashboardState, DeviceModel
+from .workspace import PlotPane, PlotTrace, PlotWorkspace, default_trace_color
 
 RESERVED_COMMAND_NAMES = frozenset({"device.describe", "param.list", "param.get", "param.set"})
 
@@ -102,6 +103,29 @@ class DashboardRuntime:
             return ()
         return model.capabilities.streams
 
+    def field_specs_for_stream(self, device: str | None, stream_name: str | None) -> tuple[StreamFieldSpec, ...]:
+        stream_spec = self.get_stream_spec(device, stream_name)
+        if stream_spec is not None:
+            return stream_spec.fields
+        model = self.get_device(device)
+        if model is None or stream_name is None:
+            return ()
+        stream_state = model.streams.get(stream_name)
+        if stream_state is None:
+            return ()
+        inferred_fields = []
+        for field_name, value in stream_state.last_data.items():
+            if isinstance(value, bool):
+                type_name = "bool"
+            elif isinstance(value, int):
+                type_name = "i64"
+            elif isinstance(value, float):
+                type_name = "float"
+            else:
+                type_name = "string"
+            inferred_fields.append(StreamFieldSpec(name=field_name, type=type_name, unit=""))
+        return tuple(inferred_fields)
+
     def command_specs_for_device(self, device: str | None, *, include_reserved: bool = False):
         model = self.get_device(device)
         if model is None or model.capabilities is None:
@@ -160,3 +184,50 @@ class DashboardRuntime:
         if stream_state is None:
             return {}
         return dict(stream_state.last_data)
+
+    def latest_value_for_field(self, device: str | None, stream_name: str | None, field_name: str) -> JSONScalar | None:
+        values = self.latest_stream_values(device, stream_name)
+        return values.get(field_name)
+
+    def build_default_workspace(self, device: str) -> PlotWorkspace:
+        panes: list[PlotPane] = []
+        ordered_streams = [stream.name for stream in self.stream_specs_for_device(device)]
+        for stream in self.stream_names_for_device(device):
+            if stream not in ordered_streams:
+                ordered_streams.append(stream)
+
+        for stream in ordered_streams:
+            numeric_fields = self.numeric_field_names(device, stream)
+            if not numeric_fields:
+                continue
+            traces = tuple(
+                PlotTrace(
+                    stream=stream,
+                    field=field_name,
+                    color=default_trace_color(index),
+                )
+                for index, field_name in enumerate(numeric_fields)
+            )
+            title = stream.rsplit(".", 1)[-1].replace("_", " ").title()
+            panes.append(
+                PlotPane(
+                    id=f"pane-{len(panes) + 1}",
+                    title=title,
+                    traces=traces,
+                )
+            )
+
+        if not panes:
+            panes.append(
+                PlotPane(
+                    id="pane-1",
+                    title="Main",
+                    traces=(),
+                )
+            )
+
+        return PlotWorkspace(
+            device=device,
+            panes=tuple(panes),
+            active_pane_id=panes[0].id,
+        )
