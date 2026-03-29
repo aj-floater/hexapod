@@ -394,6 +394,16 @@ static void poll_command_input(
     }
 }
 
+static bool command_input_pending(
+    const PioUartRx *command_rx,
+    const DevlinkSerialLineBuffer *line_buffer
+) {
+    hard_assert(command_rx != NULL);
+    hard_assert(line_buffer != NULL);
+
+    return pio_uart_rx_has_pending(command_rx) || line_buffer->len > 0u || line_buffer->overflowed;
+}
+
 static bool status_led_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -563,7 +573,9 @@ int main(void) {
             command_line,
             sizeof(command_line)
         );
-        status_led_tick(&app);
+        if (!command_input_pending(&command_rx, &command_buffer)) {
+            status_led_tick(&app);
+        }
         tight_loop_contents();
     }
 }

@@ -44,3 +44,12 @@ bool pio_uart_rx_try_getc(PioUartRx *rx, uint8_t *out_byte) {
     *out_byte = (uint8_t)(raw >> 24);
     return true;
 }
+
+bool pio_uart_rx_has_pending(const PioUartRx *rx) {
+    hard_assert(rx != NULL);
+    if (!rx->initialized) {
+        return false;
+    }
+
+    return !pio_sm_is_rx_fifo_empty(rx->pio, rx->sm);
+}

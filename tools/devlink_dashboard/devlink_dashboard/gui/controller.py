@@ -23,6 +23,8 @@ from .runtime import DashboardRuntime
 DISCOVERY_TIMEOUT_MS = 3000
 DISCOVERY_RETRY_INTERVAL_MS = 250
 MAX_LINES_PER_POLL = 200
+OUTBOX_FLUSH_INTERVAL_MS = 5
+MAX_MESSAGES_PER_FLUSH = 1
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ class ConnectionWorker(QtCore.QObject):
         self._transport: SerialTransport | None = None
         self._recorder: JsonlRecorder | None = None
         self._timer: QtCore.QTimer | None = None
+        self._outbox_timer: QtCore.QTimer | None = None
+        self._outbox: list[CmdMessage] = []
         self._stopping = False
 
     @QtCore.Slot()
@@ -70,6 +74,9 @@ class ConnectionWorker(QtCore.QObject):
         self._timer.setInterval(max(10, int(self._config.timeout * 1000)))
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+        self._outbox_timer = QtCore.QTimer(self)
+        self._outbox_timer.setInterval(OUTBOX_FLUSH_INTERVAL_MS)
+        self._outbox_timer.timeout.connect(self._flush_outbox)
         self.connected.emit()
 
     @QtCore.Slot()
@@ -85,13 +92,10 @@ class ConnectionWorker(QtCore.QObject):
         if self._transport is None:
             self.connection_error.emit("transport is not open")
             return
-        try:
-            if self._recorder is not None:
-                self._recorder.record_message(message)
-            self._transport.send_message(message)
-        except Exception as exc:
-            self.connection_error.emit(str(exc))
-            self.stop()
+        self._outbox.append(message)
+        if self._outbox_timer is not None and not self._outbox_timer.isActive():
+            self._outbox_timer.start()
+        self._flush_outbox()
 
     @QtCore.Slot()
     def _poll(self) -> None:
@@ -115,11 +119,14 @@ class ConnectionWorker(QtCore.QObject):
 
             try:
                 if self._transport.pending_input_bytes() <= 0:
+                    self._flush_outbox()
                     return
             except Exception as exc:
                 self.connection_error.emit(str(exc))
                 self.stop()
                 return
+
+        self._flush_outbox()
 
     def _handle_line(self, line: str) -> None:
         if line == "":
@@ -145,12 +152,53 @@ class ConnectionWorker(QtCore.QObject):
             self._timer.stop()
             self._timer.deleteLater()
             self._timer = None
+        if self._outbox_timer is not None:
+            self._outbox_timer.stop()
+            self._outbox_timer.deleteLater()
+            self._outbox_timer = None
+        self._outbox = []
         if self._recorder is not None:
             self._recorder.close()
             self._recorder = None
         if self._transport is not None:
             self._transport.close()
             self._transport = None
+
+    @QtCore.Slot()
+    def _flush_outbox(self) -> None:
+        if self._transport is None or not self._outbox:
+            if self._outbox_timer is not None:
+                self._outbox_timer.stop()
+            return
+
+        try:
+            if self._transport.pending_input_bytes() > 0:
+                if self._outbox_timer is not None and not self._outbox_timer.isActive():
+                    self._outbox_timer.start()
+                return
+        except Exception as exc:
+            self.connection_error.emit(str(exc))
+            self.stop()
+            return
+
+        sent = 0
+        while self._outbox and sent < MAX_MESSAGES_PER_FLUSH:
+            message = self._outbox.pop(0)
+            try:
+                if self._recorder is not None:
+                    self._recorder.record_message(message)
+                self._transport.send_message(message)
+            except Exception as exc:
+                self.connection_error.emit(str(exc))
+                self.stop()
+                return
+            sent += 1
+
+        if self._outbox:
+            if self._outbox_timer is not None and not self._outbox_timer.isActive():
+                self._outbox_timer.start()
+        elif self._outbox_timer is not None:
+            self._outbox_timer.stop()
 
 
 class GuiController(QtCore.QObject):

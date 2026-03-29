@@ -66,6 +66,41 @@ class TransportTests(unittest.TestCase):
 
         self.assertEqual(len(messages), 2)
 
+    def test_connection_worker_defers_send_until_input_is_drained(self) -> None:
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.pending = 4
+                self.sent: list[str] = []
+
+            def pending_input_bytes(self) -> int:
+                return self.pending
+
+            def send_message(self, message) -> None:
+                self.sent.append(message.name)
+
+        worker = ConnectionWorker(ConnectionConfig(port="/dev/null"))
+        worker._transport = FakeTransport()  # type: ignore[assignment]
+
+        worker.send_message(
+            SimpleNamespace(name="param.set", type="cmd")  # ignored because not a CmdMessage
+        )
+        self.assertEqual(worker._transport.sent, [])  # type: ignore[union-attr]
+
+        from devlink_dashboard.messages import build_cmd_message
+
+        message = build_cmd_message(
+            device="status_led",
+            command_id=7,
+            name="param.set",
+            args={"param": "blink.period_ms", "value": 123},
+        )
+        worker.send_message(message)
+        self.assertEqual(worker._transport.sent, [])  # type: ignore[union-attr]
+
+        worker._transport.pending = 0  # type: ignore[union-attr]
+        worker._flush_outbox()
+        self.assertEqual(worker._transport.sent, ["param.set"])  # type: ignore[union-attr]
+
 
 if __name__ == "__main__":
     unittest.main()
