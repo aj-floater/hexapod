@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -233,7 +235,7 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self._record_checkbox)
 
         self._record_path_edit = QtWidgets.QLineEdit()
-        self._record_path_edit.setPlaceholderText("session.jsonl")
+        self._record_path_edit.setPlaceholderText("recordings/")
         toolbar.addWidget(self._record_path_edit, 1)
 
         self._browse_button = QtWidgets.QPushButton("Browse")
@@ -531,15 +533,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._port_combo.setEditText(port)
 
     def _choose_record_path(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        path = QtWidgets.QFileDialog.getExistingDirectory(
             self,
-            "Choose Session Log",
-            self._record_path_edit.text() or "session.jsonl",
-            "JSON Lines (*.jsonl);;All Files (*)",
+            "Choose Recording Directory",
+            self._record_path_edit.text() or str(Path.cwd()),
         )
         if path:
             self._record_checkbox.setChecked(True)
             self._record_path_edit.setText(path)
+
+    def _build_record_output_path(self, directory_text: str, port: str) -> str:
+        directory = Path(directory_text).expanduser()
+        port_name = Path(port).name or "serial"
+        safe_port_name = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in port_name)
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"devlink-{safe_port_name}-{timestamp}.jsonl"
+        return str(directory / filename)
 
     def _toggle_connection(self) -> None:
         if self._controller.is_connected:
@@ -553,10 +562,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         record_path = None
         if self._record_checkbox.isChecked():
-            record_path = self._record_path_edit.text().strip()
-            if not record_path:
-                self._show_status("choose a record path or disable recording", error=True)
+            record_directory = self._record_path_edit.text().strip()
+            if not record_directory:
+                self._show_status("choose a recording directory or disable recording", error=True)
                 return
+            record_path = self._build_record_output_path(record_directory, port)
 
         self._controller.connect_to(
             ConnectionConfig(
