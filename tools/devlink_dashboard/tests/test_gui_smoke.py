@@ -10,7 +10,7 @@ _HAS_GUI = bool(importlib.util.find_spec("PySide6")) and bool(importlib.util.fin
 
 if _HAS_GUI:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6 import QtTest, QtWidgets
+    from PySide6 import QtCore, QtTest, QtWidgets
 
     from devlink_dashboard.gui.controller import GuiController
     from devlink_dashboard.gui.main_window import MainWindow
@@ -266,6 +266,62 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_remove_pane_is_only_top_level_and_requires_confirmation(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.state","fields":[{"name":"blink_period_ms","type":"u32","unit":"ms"}]},'
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+        remove_controls = [
+            child for child in pane_widget.findChildren(QtWidgets.QAbstractButton)
+            if child.toolTip() == "Remove this pane"
+        ]
+        self.assertEqual(remove_controls, [])
+
+        calls: list[str] = []
+        original_warning = QtWidgets.QMessageBox.warning
+
+        def fake_warning(parent, title, text, buttons, default_button):  # type: ignore[no-untyped-def]
+            calls.append(text)
+            return QtWidgets.QMessageBox.StandardButton.Cancel
+
+        QtWidgets.QMessageBox.warning = fake_warning
+        try:
+            window._confirm_remove_active_pane()
+            current = window._plot_workspace.workspace
+            self.assertEqual(len(current.panes), 2)
+            self.assertEqual(len(calls), 1)
+
+            QtWidgets.QMessageBox.warning = (
+                lambda parent, title, text, buttons, default_button: QtWidgets.QMessageBox.StandardButton.Yes
+            )
+            window._confirm_remove_active_pane()
+            updated = window._plot_workspace.workspace
+            self.assertEqual(len(updated.panes), 1)
+        finally:
+            QtWidgets.QMessageBox.warning = original_warning
+
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_plot_workspace_follows_recent_samples(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -477,6 +533,389 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_horizontal_wheel_zoom_changes_x_range_only(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(200):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        before_x = pane_widget.current_x_range()
+        before_y = pane_widget.current_y_range()
+        self.assertIsNotNone(before_x)
+        self.assertIsNotNone(before_y)
+
+        center = pane_widget.plot_widget.viewport().rect().center()
+        handled = pane_widget._handle_plot_wheel(QtCore.QPoint(120, 0), QtCore.QPointF(center))
+        app.processEvents()
+
+        after_x = pane_widget.current_x_range()
+        after_y = pane_widget.current_y_range()
+        self.assertTrue(handled)
+        self.assertIsNotNone(after_x)
+        self.assertIsNotNone(after_y)
+        self.assertLess(after_x[1] - after_x[0], before_x[1] - before_x[0])
+        self.assertAlmostEqual(after_y[1] - after_y[0], before_y[1] - before_y[0], places=6)
+        self.assertFalse(pane_widget._follow_button.isChecked())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_horizontal_wheel_zoom_is_anchored_to_cursor_position(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(300):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        viewport = pane_widget.plot_widget.viewport()
+        target = QtCore.QPointF(viewport.rect().width() * 0.2, viewport.rect().height() * 0.35)
+        before = pane_widget._map_position_to_data_point(target, viewport)
+        handled = pane_widget._handle_plot_wheel(
+            QtCore.QPoint(120, 0),
+            target,
+            source_widget=viewport,
+        )
+        app.processEvents()
+        after = pane_widget._map_position_to_data_point(target, viewport)
+
+        self.assertTrue(handled)
+        self.assertAlmostEqual(after.x(), before.x(), places=6)
+        self.assertAlmostEqual(after.y(), before.y(), places=6)
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_vertical_wheel_zoom_changes_y_range_only(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(200):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        before_x = pane_widget.current_x_range()
+        before_y = pane_widget.current_y_range()
+        self.assertIsNotNone(before_x)
+        self.assertIsNotNone(before_y)
+
+        center = pane_widget.plot_widget.viewport().rect().center()
+        handled = pane_widget._handle_plot_wheel(QtCore.QPoint(0, 120), QtCore.QPointF(center))
+        app.processEvents()
+
+        after_x = pane_widget.current_x_range()
+        after_y = pane_widget.current_y_range()
+        self.assertTrue(handled)
+        self.assertIsNotNone(after_x)
+        self.assertIsNotNone(after_y)
+        self.assertAlmostEqual(after_x[1] - after_x[0], before_x[1] - before_x[0], places=6)
+        self.assertLess(after_y[1] - after_y[0], before_y[1] - before_y[0])
+        self.assertTrue(pane_widget._follow_button.isChecked())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_vertical_wheel_zoom_is_anchored_to_cursor_position(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(300):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        viewport = pane_widget.plot_widget.viewport()
+        target = QtCore.QPointF(viewport.rect().width() * 0.7, viewport.rect().height() * 0.65)
+        before = pane_widget._map_position_to_data_point(target, viewport)
+        handled = pane_widget._handle_plot_wheel(
+            QtCore.QPoint(0, 120),
+            target,
+            source_widget=viewport,
+        )
+        app.processEvents()
+        after = pane_widget._map_position_to_data_point(target, viewport)
+
+        self.assertTrue(handled)
+        self.assertAlmostEqual(after.x(), before.x(), places=6)
+        self.assertAlmostEqual(after.y(), before.y(), places=6)
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_alt_vertical_wheel_performs_generic_zoom(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(200):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        before_x = pane_widget.current_x_range()
+        before_y = pane_widget.current_y_range()
+        self.assertIsNotNone(before_x)
+        self.assertIsNotNone(before_y)
+
+        center = pane_widget.plot_widget.viewport().rect().center()
+        handled = pane_widget._handle_plot_wheel(
+            QtCore.QPoint(0, 120),
+            QtCore.QPointF(center),
+            QtCore.Qt.KeyboardModifier.AltModifier,
+        )
+        app.processEvents()
+
+        after_x = pane_widget.current_x_range()
+        after_y = pane_widget.current_y_range()
+        self.assertTrue(handled)
+        self.assertIsNotNone(after_x)
+        self.assertIsNotNone(after_y)
+        self.assertLess(after_x[1] - after_x[0], before_x[1] - before_x[0])
+        self.assertLess(after_y[1] - after_y[0], before_y[1] - before_y[0])
+        self.assertFalse(pane_widget._follow_button.isChecked())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_generic_pinch_zoom_changes_both_axes(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(200):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        before_x = pane_widget.current_x_range()
+        before_y = pane_widget.current_y_range()
+        self.assertIsNotNone(before_x)
+        self.assertIsNotNone(before_y)
+
+        center = pane_widget.plot_widget.viewport().rect().center()
+        handled = pane_widget._handle_plot_generic_zoom(0.8, QtCore.QPointF(center))
+        app.processEvents()
+
+        after_x = pane_widget.current_x_range()
+        after_y = pane_widget.current_y_range()
+        self.assertTrue(handled)
+        self.assertIsNotNone(after_x)
+        self.assertIsNotNone(after_y)
+        self.assertLess(after_x[1] - after_x[0], before_x[1] - before_x[0])
+        self.assertLess(after_y[1] - after_y[0], before_y[1] - before_y[0])
+        self.assertFalse(pane_widget._follow_button.isChecked())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_generic_zoom_is_anchored_to_cursor_position(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(300):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        viewport = pane_widget.plot_widget.viewport()
+        target = QtCore.QPointF(viewport.rect().width() * 0.3, viewport.rect().height() * 0.4)
+        before = pane_widget._map_position_to_data_point(target, viewport)
+        handled = pane_widget._handle_plot_generic_zoom(0.8, target, viewport)
+        app.processEvents()
+        after = pane_widget._map_position_to_data_point(target, viewport)
+
+        self.assertTrue(handled)
+        self.assertAlmostEqual(after.x(), before.x(), places=6)
+        self.assertAlmostEqual(after.y(), before.y(), places=6)
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_param_list_response_updates_current_value(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -514,7 +953,7 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
-    def test_values_panel_shows_latest_trace_values(self) -> None:
+    def test_trace_rows_show_latest_trace_values(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
         if app is None:
@@ -541,10 +980,13 @@ class GuiSmokeTests(unittest.TestCase):
             window._on_message_received(sample)
         QtTest.QTest.qWait(50)
 
-        self.assertEqual(window._value_table.rowCount(), 2)
-        self.assertEqual(window._value_table.item(0, 1).text(), "12")
-        self.assertEqual(window._value_table.item(1, 1).text(), "18")
-        self.assertFalse(window._values_state_label.isVisible())
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+        phase_row = pane_widget._trace_rows[("status_led.timing", "phase_elapsed_ms")]
+        toggle_row = pane_widget._trace_rows[("status_led.timing", "time_to_toggle_ms")]
+        self.assertEqual(phase_row[3].text(), "12")
+        self.assertEqual(toggle_row[3].text(), "18")
+        self.assertEqual(phase_row[4].text(), "ms")
+        self.assertEqual(toggle_row[4].text(), "ms")
         window.close()
 
         if owns_app:
