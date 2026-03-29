@@ -126,7 +126,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_refresh_timer.setInterval(LIVE_REFRESH_INTERVAL_MS)
         self._live_refresh_timer.timeout.connect(self._flush_live_refresh)
         self._plot_refresh_pending = False
-        self._values_refresh_pending = False
         self._raw_view_timer = QtCore.QTimer(self)
         self._raw_view_timer.setSingleShot(True)
         self._raw_view_timer.setInterval(RAW_VIEW_REFRESH_INTERVAL_MS)
@@ -327,14 +326,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tab_widget = QtWidgets.QTabWidget()
         self._body_splitter.addWidget(self._tab_widget)
 
-        self._pane_tab = self._build_pane_tab()
         self._params_tab = self._build_params_tab()
         self._commands_tab = self._build_commands_tab()
         self._events_tab = self._build_events_tab()
         self._logs_tab = self._build_logs_tab()
         self._raw_tab = self._build_raw_tab()
 
-        self._tab_widget.addTab(self._pane_tab, "Pane")
         self._tab_widget.addTab(self._params_tab, "Params")
         self._tab_widget.addTab(self._commands_tab, "Commands")
         self._tab_widget.addTab(self._events_tab, "Events")
@@ -346,32 +343,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._restore_window_layout()
 
         self.statusBar().showMessage("Ready")
-
-    def _build_pane_tab(self) -> QtWidgets.QWidget:
-        widget = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(widget)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        self._values_label = QtWidgets.QLabel("Pane Values")
-        layout.addWidget(self._values_label)
-
-        self._values_state_label = QtWidgets.QLabel("No active traces in this pane")
-        self._values_state_label.setWordWrap(True)
-        self._values_state_label.setStyleSheet("color: #8b96a5;")
-        layout.addWidget(self._values_state_label)
-
-        self._value_table = QtWidgets.QTableWidget(0, 3)
-        self._value_table.setHorizontalHeaderLabels(["Field", "Value", "Unit"])
-        self._value_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self._value_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self._value_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self._value_table.verticalHeader().setVisible(False)
-        self._value_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._value_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        layout.addWidget(self._value_table, 1)
-
-        return widget
 
     def _build_params_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
@@ -486,13 +457,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_trace_button.clicked.connect(self._add_selected_field_to_active_pane)
         self._add_pane_button.clicked.connect(self._plot_workspace.add_pane)
         self._duplicate_pane_button.clicked.connect(self._plot_workspace.duplicate_active_pane)
-        self._remove_pane_button.clicked.connect(self._plot_workspace.remove_active_pane)
+        self._remove_pane_button.clicked.connect(self._confirm_remove_active_pane)
         self._command_combo.currentIndexChanged.connect(self._rebuild_command_form)
         self._event_filter.currentTextChanged.connect(self._refresh_events_view)
         self._log_filter.currentTextChanged.connect(self._refresh_logs_view)
         self._plot_workspace.workspace_changed.connect(self._on_workspace_changed)
         self._plot_workspace.add_trace_requested.connect(lambda _pane_id: self._add_selected_field_to_active_pane())
-        self._plot_workspace.active_pane_changed.connect(lambda _pane_id: self._refresh_values_table())
         self._plot_workspace.active_pane_changed.connect(lambda _pane_id: self._refresh_discovery_views())
 
         self._controller.ports_changed.connect(self._refresh_port_combo)
@@ -597,7 +567,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_session_reset(self) -> None:
         self._live_refresh_timer.stop()
         self._plot_refresh_pending = False
-        self._values_refresh_pending = False
         self._raw_view_timer.stop()
         self._pending_raw_lines = []
         self._clear_all_param_apply_timers()
@@ -618,8 +587,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._field_list.clear()
         self._plot_workspace.set_workspace(None)
         self._workspace_label.setText("No plot workspace loaded")
-        self._values_label.setText("Pane Values")
-        self._value_table.setRowCount(0)
         self._param_table.setRowCount(0)
         self._events_view.clear()
         self._logs_view.clear()
@@ -639,7 +606,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if not connected:
             self._live_refresh_timer.stop()
             self._plot_refresh_pending = False
-            self._values_refresh_pending = False
             self._raw_view_timer.stop()
             self._pending_raw_lines = []
             self._clear_all_param_apply_timers()
@@ -773,7 +739,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot_workspace.set_workspace(workspace)
         self._workspace_label.setText(f"Workspace for {workspace.device}")
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-        self._refresh_values_table()
 
     def _maybe_seed_default_workspace(self) -> None:
         if (
@@ -793,7 +758,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workspace = seeded
         self._plot_workspace.set_workspace(seeded)
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-        self._refresh_values_table()
 
     def _add_selected_field_to_active_pane(self) -> None:
         if self._selected_stream is None or self._selected_device is None:
@@ -817,6 +781,28 @@ class MainWindow(QtWidgets.QMainWindow):
         color = default_trace_color(len(pane.traces))
         self._plot_workspace.add_trace(self._selected_stream, item.text(), color)
         self._show_status(f"added {self._selected_stream}.{item.text()} to {pane.title}")
+
+    def _confirm_remove_active_pane(self) -> None:
+        workspace = self._plot_workspace.workspace
+        active_id = self._plot_workspace.active_pane_id
+        if workspace is None or active_id is None:
+            return
+        pane = next((entry for entry in workspace.panes if entry.id == active_id), None)
+        if pane is None:
+            return
+        message = f"Remove pane '{pane.title}'?"
+        details = "This cannot be undone from the current session."
+        result = QtWidgets.QMessageBox.warning(
+            self,
+            "Remove Pane",
+            f"{message}\n\n{details}",
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.Cancel,
+            QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        if result != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+        self._plot_workspace.remove_active_pane()
+        self._show_status(f"removed pane {pane.title}")
 
     def _on_device_selected(self, device: str) -> None:
         previous_device = self._selected_device
@@ -861,7 +847,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_params_table()
             self._refresh_command_specs()
             self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-            self._refresh_values_table()
             self._show_status(f"loaded capabilities for {message.device}")
         elif isinstance(message, SampleMessage):
             if self._selected_device == message.device:
@@ -883,7 +868,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 suffix = f" error={message.error.code}: {message.error.message}"
             self._command_response_label.setText(f"resp id={message.id} ok={message.ok}{suffix}")
             self._refresh_params_table()
-            self._refresh_values_table()
         elif isinstance(message, EventMessage):
             self._refresh_events_view()
         elif isinstance(message, LogMessage):
@@ -898,7 +882,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workspace_label.setText(f"Workspace for {workspace.device}")
         self._save_workspace_snapshot()
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-        self._refresh_values_table()
 
     def _save_workspace_snapshot(self) -> None:
         workspace = self._plot_workspace.current_workspace_snapshot()
@@ -940,19 +923,15 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self._show_status(f"failed to save window layout: {exc}", error=True)
 
-    def _schedule_live_refresh(self, *, plot: bool = True, values: bool = True) -> None:
+    def _schedule_live_refresh(self, *, plot: bool = True) -> None:
         self._plot_refresh_pending = self._plot_refresh_pending or plot
-        self._values_refresh_pending = self._values_refresh_pending or values
         if not self._live_refresh_timer.isActive():
             self._live_refresh_timer.start()
 
     def _flush_live_refresh(self) -> None:
         if self._plot_refresh_pending:
             self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-        if self._values_refresh_pending:
-            self._refresh_values_table()
         self._plot_refresh_pending = False
-        self._values_refresh_pending = False
 
     def _flush_raw_view(self) -> None:
         if self._tab_widget.currentWidget() is not self._raw_tab:
@@ -973,43 +952,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_logs_view()
         elif current is self._events_tab:
             self._refresh_events_view()
-
-    def _refresh_values_table(self) -> None:
-        if self._selected_device is None:
-            self._values_label.setText("Pane Values")
-            self._value_table.setRowCount(0)
-            self._values_state_label.setText("No active device")
-            self._values_state_label.setVisible(True)
-            return
-
-        values = self._plot_workspace.active_trace_values(self._controller.runtime, self._selected_device)
-        active_pane = self._plot_workspace.active_pane_id
-        active_title = None
-        active_pane_trace_count = 0
-        if self._workspace is not None and active_pane is not None:
-            for pane in self._workspace.panes:
-                if pane.id == active_pane:
-                    active_title = pane.title
-                    active_pane_trace_count = len(pane.traces)
-                    break
-        self._values_label.setText("Pane Values" if active_title is None else f"Pane Values ({active_title})")
-        self._value_table.setRowCount(len(values))
-        for row, (label, value, unit) in enumerate(values):
-            self._value_table.setItem(row, 0, QtWidgets.QTableWidgetItem(label))
-            self._value_table.setItem(row, 1, QtWidgets.QTableWidgetItem("" if value is None else str(value)))
-            self._value_table.setItem(row, 2, QtWidgets.QTableWidgetItem(unit))
-
-        has_non_empty_value = any(value is not None for _, value, _ in values)
-        if active_pane is None:
-            state_message = "No active pane"
-        elif active_pane_trace_count == 0:
-            state_message = "No active traces in this pane"
-        elif not has_non_empty_value:
-            state_message = "Waiting for samples for this pane"
-        else:
-            state_message = ""
-        self._values_state_label.setText(state_message)
-        self._values_state_label.setVisible(bool(state_message))
 
     def _refresh_params_from_device(self) -> None:
         if self._selected_device is None:

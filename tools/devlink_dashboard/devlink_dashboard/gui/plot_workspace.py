@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 DEFAULT_FOLLOW_POINT_COUNT = 250
 FOLLOW_RIGHT_PADDING_FRACTION = 0.02
 MAX_FOLLOW_SPAN_US = 10_000_000.0
+WHEEL_ZOOM_BASE = 0.85
+MIN_Y_SPAN = 1e-6
 
 
 @dataclass
@@ -34,7 +37,6 @@ class _PlotPaneWidget(QtWidgets.QFrame):
     move_up_requested = QtCore.Signal(str)
     move_down_requested = QtCore.Signal(str)
     duplicate_requested = QtCore.Signal(str)
-    remove_requested = QtCore.Signal(str)
     trace_visibility_changed = QtCore.Signal(str, str, str, bool)
     trace_remove_requested = QtCore.Signal(str, str, str)
     trace_color_changed = QtCore.Signal(str, str, str, str)
@@ -45,7 +47,10 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         super().__init__(parent)
         self._pane = pane
         self._pane_color = default_trace_color(0)
-        self._trace_rows: dict[tuple[str, str], tuple[QtWidgets.QCheckBox, QtWidgets.QPushButton, QtWidgets.QLabel]] = {}
+        self._trace_rows: dict[
+            tuple[str, str],
+            tuple[QtWidgets.QCheckBox, QtWidgets.QPushButton, QtWidgets.QLabel, QtWidgets.QLabel, QtWidgets.QLabel],
+        ] = {}
         self._curves: dict[tuple[str, str], pg.PlotDataItem] = {}
         self._suppress_manual_x_signal = False
         self._active = False
@@ -149,17 +154,6 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         duplicate_button.clicked.connect(lambda: self.duplicate_requested.emit(self._pane.id))
         header.addWidget(duplicate_button)
 
-        remove_button = QtWidgets.QPushButton("Remove")
-        self._configure_button(
-            remove_button,
-            icon=QtWidgets.QStyle.StandardPixmap.SP_DialogDiscardButton,
-            text="",
-            tooltip="Remove this pane",
-        )
-        remove_button.installEventFilter(self)
-        remove_button.clicked.connect(lambda: self.remove_requested.emit(self._pane.id))
-        header.addWidget(remove_button)
-
         autoscale_button = QtWidgets.QPushButton("Reset View")
         self._configure_button(
             autoscale_button,
@@ -174,7 +168,10 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         layout.addLayout(header)
 
         self._plot_widget = pg.PlotWidget()
+        self._plot_widget.grabGesture(QtCore.Qt.GestureType.PinchGesture)
         self._plot_widget.installEventFilter(self)
+        self._plot_widget.viewport().grabGesture(QtCore.Qt.GestureType.PinchGesture)
+        self._plot_widget.viewport().installEventFilter(self)
         self._plot_widget.setBackground("#101822")
         self._plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self._plot_widget.setLabel("bottom", "Device Time", units="us")
@@ -264,6 +261,19 @@ class _PlotPaneWidget(QtWidgets.QFrame):
             return None
         return (x_min, x_max)
 
+    def current_y_range(self) -> tuple[float, float] | None:
+        y_range = self._plot_widget.viewRange()[1]
+        if len(y_range) != 2:
+            return None
+        try:
+            y_min = float(y_range[0])
+            y_max = float(y_range[1])
+        except (TypeError, ValueError):
+            return None
+        if not (y_max > y_min):
+            return None
+        return (y_min, y_max)
+
     def set_x_range(self, x_min: float, x_max: float) -> None:
         if not (x_max > x_min):
             return
@@ -273,13 +283,21 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         finally:
             self._suppress_manual_x_signal = False
 
+    def set_y_range(self, y_min: float, y_max: float) -> None:
+        if not (y_max > y_min):
+            return
+        self._plot_widget.setYRange(y_min, y_max, padding=0)
+
+    def set_y_auto_range(self, enabled: bool) -> None:
+        self._plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis, enable=enabled)
+
     def _sync_trace_rows(self) -> None:
         wanted_keys = {trace.key for trace in self._pane.traces}
 
         for key, widgets in list(self._trace_rows.items()):
             if key in wanted_keys:
                 continue
-            checkbox, color_button, label = widgets
+            checkbox, color_button, label, value_label, unit_label = widgets
             self._trace_layout.removeWidget(checkbox.parentWidget())
             checkbox.parentWidget().deleteLater()
             self._trace_rows.pop(key, None)
@@ -320,6 +338,21 @@ class _PlotPaneWidget(QtWidgets.QFrame):
                 label.installEventFilter(self)
                 row_layout.addWidget(label, 1)
 
+                value_label = QtWidgets.QLabel("\u2014")
+                value_label.installEventFilter(self)
+                value_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                value_label.setMinimumWidth(64)
+                value_font = value_label.font()
+                value_font.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+                value_label.setFont(value_font)
+                row_layout.addWidget(value_label)
+
+                unit_label = QtWidgets.QLabel("")
+                unit_label.installEventFilter(self)
+                unit_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+                unit_label.setMinimumWidth(28)
+                row_layout.addWidget(unit_label)
+
                 remove_button = QtWidgets.QToolButton()
                 remove_button.installEventFilter(self)
                 self._configure_button(
@@ -338,10 +371,10 @@ class _PlotPaneWidget(QtWidgets.QFrame):
                 row_layout.addWidget(remove_button)
 
                 self._trace_layout.addWidget(container)
-                row = (checkbox, color_button, label)
+                row = (checkbox, color_button, label, value_label, unit_label)
                 self._trace_rows[trace.key] = row
 
-            checkbox, color_button, label = row
+            checkbox, color_button, label, value_label, unit_label = row
             checkbox.blockSignals(True)
             checkbox.setChecked(trace.visible)
             checkbox.blockSignals(False)
@@ -350,6 +383,14 @@ class _PlotPaneWidget(QtWidgets.QFrame):
             color_button.setStyleSheet(
                 f"background-color: {trace.color}; border: 1px solid #2a3240; border-radius: 4px;"
             )
+
+    def set_trace_status(self, trace: PlotTrace, value: object | None, unit: str) -> None:
+        row = self._trace_rows.get(trace.key)
+        if row is None:
+            return
+        _checkbox, _color_button, _label, value_label, unit_label = row
+        value_label.setText("\u2014" if value is None else str(value))
+        unit_label.setText(unit)
 
     def _choose_trace_color(self, stream: str, field: str) -> None:
         trace = next((item for item in self._pane.traces if item.stream == stream and item.field == field), None)
@@ -389,6 +430,7 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         curve.setVisible(trace.visible)
 
     def autoscale(self) -> None:
+        self.set_y_auto_range(True)
         self._plot_widget.autoRange()
 
     def _on_manual_range_changed(self, mask: object) -> None:
@@ -408,7 +450,174 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         if x_range is not None:
             self.x_range_manually_changed.emit(self._pane.id, x_range)
 
+    def _zoom_range(
+        self,
+        minimum: float,
+        maximum: float,
+        focus: float,
+        steps: float,
+        minimum_span: float,
+    ) -> tuple[float, float] | None:
+        if not (maximum > minimum):
+            return None
+        span = maximum - minimum
+        factor = WHEEL_ZOOM_BASE ** steps
+        new_span = max(minimum_span, span * factor)
+        if not (new_span > 0):
+            return None
+        focus_ratio = (focus - minimum) / span if span > 0 else 0.5
+        focus_ratio = max(0.0, min(1.0, focus_ratio))
+        new_minimum = focus - (new_span * focus_ratio)
+        new_maximum = new_minimum + new_span
+        return (new_minimum, new_maximum)
+
+    def _map_position_to_data_point(
+        self,
+        position: QtCore.QPointF,
+        source_widget: QtWidgets.QWidget | None = None,
+    ) -> QtCore.QPointF:
+        if source_widget is not None and source_widget is not self._plot_widget:
+            mapped_position = source_widget.mapTo(self._plot_widget, position.toPoint())
+        else:
+            mapped_position = position.toPoint()
+        scene_point = self._plot_widget.mapToScene(mapped_position)
+        return self._plot_widget.getViewBox().mapSceneToView(scene_point)
+
+    def _handle_plot_generic_zoom(
+        self,
+        scale_factor: float,
+        position: QtCore.QPointF,
+        source_widget: QtWidgets.QWidget | None = None,
+    ) -> bool:
+        if not math.isfinite(scale_factor) or scale_factor <= 0 or math.isclose(scale_factor, 1.0, rel_tol=1e-3):
+            return False
+
+        self.activated.emit(self._pane.id)
+        data_point = self._map_position_to_data_point(position, source_widget)
+        current_x_range = self.current_x_range()
+        current_y_range = self.current_y_range()
+        if current_x_range is None or current_y_range is None:
+            return False
+
+        new_x_range = self._zoom_range(
+            current_x_range[0],
+            current_x_range[1],
+            float(data_point.x()),
+            math.log(scale_factor) / math.log(WHEEL_ZOOM_BASE),
+            1.0,
+        )
+        new_y_range = self._zoom_range(
+            current_y_range[0],
+            current_y_range[1],
+            float(data_point.y()),
+            math.log(scale_factor) / math.log(WHEEL_ZOOM_BASE),
+            max(MIN_Y_SPAN, abs(float(data_point.y())) * 1e-6),
+        )
+        if new_x_range is None or new_y_range is None:
+            return False
+
+        self.set_y_auto_range(False)
+        self.set_x_range(*new_x_range)
+        self.set_y_range(*new_y_range)
+        self.x_range_manually_changed.emit(self._pane.id, new_x_range)
+        return True
+
+    def _handle_plot_wheel(
+        self,
+        angle_delta: QtCore.QPoint,
+        position: QtCore.QPointF,
+        modifiers: QtCore.Qt.KeyboardModifier | QtCore.Qt.KeyboardModifiers = QtCore.Qt.KeyboardModifier.NoModifier,
+        source_widget: QtWidgets.QWidget | None = None,
+    ) -> bool:
+        if angle_delta.isNull():
+            return False
+
+        self.activated.emit(self._pane.id)
+        data_point = self._map_position_to_data_point(position, source_widget)
+        handled = False
+        preserved_y_range = self.current_y_range()
+
+        if modifiers & QtCore.Qt.KeyboardModifier.AltModifier:
+            vertical_steps = angle_delta.y() / 120.0
+            if vertical_steps:
+                return self._handle_plot_generic_zoom(
+                    WHEEL_ZOOM_BASE ** vertical_steps,
+                    position,
+                    source_widget,
+                )
+
+        horizontal_steps = angle_delta.x() / 120.0
+        if horizontal_steps:
+            current_x_range = self.current_x_range()
+            if current_x_range is not None:
+                new_x_range = self._zoom_range(
+                    current_x_range[0],
+                    current_x_range[1],
+                    float(data_point.x()),
+                    horizontal_steps,
+                    1.0,
+                )
+                if new_x_range is not None:
+                    self.set_x_range(*new_x_range)
+                    if preserved_y_range is not None and not angle_delta.y():
+                        self.set_y_range(*preserved_y_range)
+                    self.x_range_manually_changed.emit(self._pane.id, new_x_range)
+                    handled = True
+
+        vertical_steps = angle_delta.y() / 120.0
+        if vertical_steps:
+            current_y_range = self.current_y_range()
+            if current_y_range is not None:
+                new_y_range = self._zoom_range(
+                    current_y_range[0],
+                    current_y_range[1],
+                    float(data_point.y()),
+                    vertical_steps,
+                    max(MIN_Y_SPAN, abs(float(data_point.y())) * 1e-6),
+                )
+                if new_y_range is not None:
+                    self.set_y_auto_range(False)
+                    self.set_y_range(*new_y_range)
+                    handled = True
+
+        return handled
+
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        plot_widget = getattr(self, "_plot_widget", None)
+        viewport = plot_widget.viewport() if plot_widget is not None else None
+        source_widget = watched if isinstance(watched, QtWidgets.QWidget) else None
+        if (
+            plot_widget is not None
+            and watched in {plot_widget, viewport}
+            and event.type() == QtCore.QEvent.Type.Wheel
+            and isinstance(event, QtGui.QWheelEvent)
+        ):
+            if self._handle_plot_wheel(event.angleDelta(), event.position(), event.modifiers(), source_widget):
+                event.accept()
+                return True
+        if (
+            plot_widget is not None
+            and watched in {plot_widget, viewport}
+            and event.type() == QtCore.QEvent.Type.NativeGesture
+            and isinstance(event, QtGui.QNativeGestureEvent)
+            and event.gestureType() == QtCore.Qt.NativeGestureType.ZoomNativeGesture
+        ):
+            if self._handle_plot_generic_zoom(math.exp(-event.value()), event.position(), source_widget):
+                event.accept()
+                return True
+        if (
+            plot_widget is not None
+            and watched in {plot_widget, viewport}
+            and event.type() == QtCore.QEvent.Type.Gesture
+            and isinstance(event, QtWidgets.QGestureEvent)
+        ):
+            gesture = event.gesture(QtCore.Qt.GestureType.PinchGesture)
+            if isinstance(gesture, QtWidgets.QPinchGesture):
+                last_scale = gesture.lastScaleFactor() or 1.0
+                scale_delta = gesture.scaleFactor() / last_scale if last_scale else gesture.scaleFactor()
+                if self._handle_plot_generic_zoom(1.0 / max(scale_delta, 1e-6), gesture.centerPoint(), source_widget):
+                    event.accept(gesture)
+                    return True
         if event.type() in {
             QtCore.QEvent.Type.MouseButtonPress,
             QtCore.QEvent.Type.FocusIn,
@@ -571,22 +780,17 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                     widget.set_trace_data(trace, x_values, y_values)
                 else:
                     widget.clear_trace_data(trace)
+                unit = ""
+                for field in runtime.field_specs_for_stream(device, trace.stream):
+                    if field.name == trace.field:
+                        unit = field.unit
+                        break
+                widget.set_trace_status(
+                    trace,
+                    runtime.latest_value_for_field(device, trace.stream, trace.field),
+                    unit,
+                )
         self._apply_follow_state(runtime, device)
-
-    def active_trace_values(self, runtime: DashboardRuntime, device: str | None) -> list[tuple[str, object, str]]:
-        active = self._active_pane()
-        if active is None or device is None:
-            return []
-        items: list[tuple[str, object, str]] = []
-        for trace in active.traces:
-            value = runtime.latest_value_for_field(device, trace.stream, trace.field)
-            unit = ""
-            for field in runtime.field_specs_for_stream(device, trace.stream):
-                if field.name == trace.field:
-                    unit = field.unit
-                    break
-            items.append((trace.display_label, value, unit))
-        return items
 
     def _replace_workspace(self, workspace: PlotWorkspace) -> None:
         self._workspace = self._merge_current_sizes(workspace)
@@ -652,7 +856,6 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 widget.move_up_requested.connect(self._on_move_up_requested)
                 widget.move_down_requested.connect(self._on_move_down_requested)
                 widget.duplicate_requested.connect(self._on_duplicate_requested)
-                widget.remove_requested.connect(self._on_remove_requested)
                 widget.trace_visibility_changed.connect(self._on_trace_visibility_changed)
                 widget.trace_remove_requested.connect(self._on_trace_removed)
                 widget.trace_color_changed.connect(self._on_trace_color_changed)
@@ -895,11 +1098,6 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         self._on_pane_activated(pane_id)
         self.duplicate_active_pane()
 
-    @QtCore.Slot(str)
-    def _on_remove_requested(self, pane_id: str) -> None:
-        self._on_pane_activated(pane_id)
-        self.remove_active_pane()
-
     @QtCore.Slot(str, str, str, bool)
     def _on_trace_visibility_changed(self, pane_id: str, stream: str, field: str, visible: bool) -> None:
         pane = self._pane_by_id(pane_id)
@@ -975,6 +1173,11 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         pane = self._pane_by_id(pane_id)
         if pane is None:
             return
+        leader_id = self._group_leaders.get(pane.x_group)
+        if leader_id is not None and leader_id != pane_id:
+            leader = self._pane_widgets.get(leader_id)
+            if leader is not None:
+                leader.set_x_range(*x_range)
         state = self._group_states.setdefault(pane.x_group, _XGroupState())
         state.follow_live = False
         state.span_us = self._clamp_follow_span(x_range[1] - x_range[0])
