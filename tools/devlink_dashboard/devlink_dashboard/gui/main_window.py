@@ -18,6 +18,7 @@ from .plot_workspace import PlotWorkspaceWidget
 from .workspace import PlotWorkspace, WindowLayout, WindowLayoutStore, WorkspaceStore, default_trace_color
 
 PARAM_APPLY_TIMEOUT_MS = 5000
+PARAM_APPLY_MAX_ATTEMPTS = 3
 LIVE_REFRESH_INTERVAL_MS = 33
 RAW_VIEW_REFRESH_INTERVAL_MS = 100
 
@@ -121,6 +122,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._param_apply_commands: dict[str, int] = {}
         self._apply_command_params: dict[int, str] = {}
         self._param_apply_timers: dict[str, QtCore.QTimer] = {}
+        self._param_apply_attempts: dict[str, int] = {}
+        self._param_apply_values: dict[str, object] = {}
         self._live_refresh_timer = QtCore.QTimer(self)
         self._live_refresh_timer.setSingleShot(True)
         self._live_refresh_timer.setInterval(LIVE_REFRESH_INTERVAL_MS)
@@ -255,7 +258,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._banner.setVisible(False)
         self._banner.setWordWrap(True)
         self._banner.setMargin(6)
-        root_layout.addWidget(self._banner)
 
         self._body_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self._body_splitter.setChildrenCollapsible(False)
@@ -340,6 +342,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         self._body_splitter.setSizes([220, 860, 360])
+        root_layout.addWidget(self._banner)
         self._restore_window_layout()
 
         self.statusBar().showMessage("Ready")
@@ -578,6 +581,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_param_values = {}
         self._param_apply_commands = {}
         self._apply_command_params = {}
+        self._param_apply_attempts = {}
+        self._param_apply_values = {}
         self._device_names = []
         self._stream_names = []
         self._field_names = []
@@ -611,6 +616,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._clear_all_param_apply_timers()
             self._param_apply_commands = {}
             self._apply_command_params = {}
+            self._param_apply_attempts = {}
+            self._param_apply_values = {}
             for param_name in list(self._param_row_indexes.keys()):
                 self._update_param_row_state(param_name)
         if connected:
@@ -861,6 +868,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if param_name is not None and self._param_apply_commands.get(param_name) == message.id:
                 self._param_apply_commands.pop(param_name, None)
                 self._clear_param_apply_timer(param_name)
+                self._param_apply_attempts.pop(param_name, None)
+                self._param_apply_values.pop(param_name, None)
             suffix = ""
             if message.ok and message.result is not None:
                 suffix = f" result={dict(message.result)}"
@@ -982,7 +991,9 @@ class MainWindow(QtWidgets.QMainWindow):
             current_value = self._current_param_value(spec, device_model)
             editor_value = self._pending_param_values.get(spec.name, current_value)
 
-            self._param_table.setItem(row, 0, QtWidgets.QTableWidgetItem(spec.name))
+            name_item = QtWidgets.QTableWidgetItem(spec.name)
+            name_item.setToolTip(spec.name)
+            self._param_table.setItem(row, 0, name_item)
             self._param_table.setItem(row, 1, QtWidgets.QTableWidgetItem(spec.type))
             self._param_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(current_value)))
 
@@ -1094,6 +1105,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if command_id is not None:
             self._param_apply_commands[param_name] = command_id
             self._apply_command_params[command_id] = param_name
+            self._param_apply_attempts[param_name] = 1
+            self._param_apply_values[param_name] = value
             self._start_param_apply_timer(param_name, command_id)
             self._update_param_row_state(param_name)
 
@@ -1519,8 +1532,34 @@ class MainWindow(QtWidgets.QMainWindow):
             self._clear_param_apply_timer(param_name)
             return
 
-        self._param_apply_commands.pop(param_name, None)
         self._apply_command_params.pop(command_id, None)
+        retry_value = self._param_apply_values.get(param_name)
+        retry_attempt = self._param_apply_attempts.get(param_name, 1)
         self._clear_param_apply_timer(param_name)
+
+        if (
+            retry_value is not None and
+            retry_attempt < PARAM_APPLY_MAX_ATTEMPTS and
+            self._selected_device is not None
+        ):
+            next_command_id = self._controller.send_command(
+                device=self._selected_device,
+                name="param.set",
+                args={"param": param_name, "value": retry_value},
+            )
+            if next_command_id is not None:
+                self._param_apply_commands[param_name] = next_command_id
+                self._apply_command_params[next_command_id] = param_name
+                self._param_apply_attempts[param_name] = retry_attempt + 1
+                self._start_param_apply_timer(param_name, next_command_id)
+                self._update_param_row_state(param_name)
+                self._show_status(
+                    f"retrying {param_name} ({retry_attempt + 1}/{PARAM_APPLY_MAX_ATTEMPTS})"
+                )
+                return
+
+        self._param_apply_commands.pop(param_name, None)
+        self._param_apply_attempts.pop(param_name, None)
+        self._param_apply_values.pop(param_name, None)
         self._update_param_row_state(param_name)
         self._show_status(f"timed out applying {param_name}; you can retry", error=True)

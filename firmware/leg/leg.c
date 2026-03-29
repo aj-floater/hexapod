@@ -548,6 +548,16 @@ static void poll_command_input(
     }
 }
 
+static bool command_input_pending(
+    const PioUartRx *command_rx,
+    const DevlinkSerialLineBuffer *line_buffer
+) {
+    hard_assert(command_rx != NULL);
+    hard_assert(line_buffer != NULL);
+
+    return pio_uart_rx_has_pending(command_rx) || line_buffer->len > 0u || line_buffer->overflowed;
+}
+
 int main(void) {
     PioUartRx command_rx = {0};
     LegAppContext app = {0};
@@ -590,7 +600,9 @@ int main(void) {
             command_line,
             sizeof(command_line)
         );
-        position_hold_demo_tick(&app, &g_motor_bank.c, &g_adc_bank.c);
+        if (!command_input_pending(&command_rx, &command_buffer)) {
+            position_hold_demo_tick(&app, &g_motor_bank.c, &g_adc_bank.c);
+        }
         rx_led_tick();
         tight_loop_contents();
     }

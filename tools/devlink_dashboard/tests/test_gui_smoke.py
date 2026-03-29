@@ -38,6 +38,22 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_status_banner_is_positioned_below_main_content(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        layout = window.centralWidget().layout()
+
+        self.assertGreater(layout.indexOf(window._banner), layout.indexOf(window._body_splitter))
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_controller_retries_device_describe_until_ready(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -992,6 +1008,32 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_param_name_cell_tooltip_shows_full_name(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":[],'
+            '"params":[{"name":"telemetry.timing_sample_ms","type":"u32","access":"rw","default":50,"min":10,"max":1000}]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+        window._selected_device = "status_led"
+        window._refresh_params_table()
+
+        name_item = window._param_table.item(0, 0)
+        self.assertIsNotNone(name_item)
+        self.assertEqual(name_item.toolTip(), "telemetry.timing_sample_ms")
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_host_parse_noise_stays_in_logs_without_error_banner(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -1047,6 +1089,47 @@ class GuiSmokeTests(unittest.TestCase):
         self.assertNotIn("blink.period_ms", window._param_apply_commands)
         self.assertEqual(window._param_apply_buttons["blink.period_ms"].text(), "Apply")
         self.assertTrue(window._param_apply_buttons["blink.period_ms"].isEnabled())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_param_apply_timeout_retries_before_giving_up(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        sent: list[tuple[str, str, dict[str, object]]] = []
+
+        def fake_send_command(*, device: str, name: str, args: dict[str, object] | None = None):
+            sent.append((device, name, args or {}))
+            return 100 + len(sent)
+
+        controller.send_command = fake_send_command  # type: ignore[method-assign]
+        window = MainWindow(controller)
+        window._selected_device = "status_led"
+        window._param_apply_commands["blink.period_ms"] = 42
+        window._apply_command_params[42] = "blink.period_ms"
+        window._param_apply_attempts["blink.period_ms"] = 1
+        window._param_apply_values["blink.period_ms"] = 300
+        window._start_param_apply_timer("blink.period_ms", 42)
+
+        window._on_param_apply_timeout("blink.period_ms", 42)
+
+        self.assertEqual(
+            sent,
+            [
+                (
+                    "status_led",
+                    "param.set",
+                    {"param": "blink.period_ms", "value": 300},
+                )
+            ],
+        )
+        self.assertEqual(window._param_apply_commands["blink.period_ms"], 101)
+        self.assertEqual(window._param_apply_attempts["blink.period_ms"], 2)
         window.close()
 
         if owns_app:
