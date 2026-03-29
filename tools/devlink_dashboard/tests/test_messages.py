@@ -10,6 +10,7 @@ from devlink_dashboard.messages import (
     SampleMessage,
     build_cmd_message,
     parse_line,
+    parse_line_resilient,
     serialize_message,
 )
 
@@ -89,6 +90,20 @@ class MessageTests(unittest.TestCase):
     def test_unknown_type_rejected(self) -> None:
         with self.assertRaises(ProtocolError):
             parse_line('{"type":"nope","version":1,"device":"leg"}')
+
+    def test_parse_line_resilient_strips_nuls(self) -> None:
+        message = parse_line_resilient(
+            '\x00{"type":"hello","version":1,"device":"status_led","protocol":"devlink","firmware":"0.2.0"}\x00'
+        )
+        self.assertIsInstance(message, HelloMessage)
+        self.assertEqual(message.device, "status_led")
+
+    def test_parse_line_resilient_recovers_trailing_message(self) -> None:
+        message = parse_line_resilient(
+            '{"type":"sample","version":1,"de{"type":"hello","version":1,"device":"status_led","protocol":"devlink","firmware":"0.2.0"}'
+        )
+        self.assertIsInstance(message, HelloMessage)
+        self.assertEqual(message.firmware, "0.2.0")
 
 
 if __name__ == "__main__":

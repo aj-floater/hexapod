@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .bus import MessageBus
-from .messages import CmdMessage, Message, parse_line, serialize_message
+from .messages import CmdMessage, Message, parse_line_resilient, serialize_message
 from .session import JsonlRecorder
 
 
@@ -38,6 +38,26 @@ class SerialTransport:
     def open(self) -> None:
         serial = self._require_serial()
         self._serial = serial.Serial(self.port, self.baud, timeout=self.timeout)
+        self._resynchronize_input()
+
+    def _resynchronize_input(self) -> None:
+        if self._serial is None:
+            return
+
+        reset_input = getattr(self._serial, "reset_input_buffer", None)
+        if callable(reset_input):
+            reset_input()
+
+        reset_output = getattr(self._serial, "reset_output_buffer", None)
+        if callable(reset_output):
+            reset_output()
+
+        read_until = getattr(self._serial, "read_until", None)
+        if callable(read_until):
+            try:
+                read_until(b"\n")
+            except Exception:
+                pass
 
     def close(self) -> None:
         if self._serial is not None:
@@ -51,6 +71,15 @@ class SerialTransport:
         if not raw:
             return None
         return raw.decode("utf-8", errors="replace").rstrip("\r\n")
+
+    def pending_input_bytes(self) -> int:
+        if self._serial is None:
+            raise RuntimeError("transport is not open")
+        waiting = getattr(self._serial, "in_waiting", 0)
+        try:
+            return int(waiting)
+        except (TypeError, ValueError):
+            return 0
 
     def send_line(self, line: str) -> None:
         if self._serial is None:
@@ -102,7 +131,7 @@ class SerialPump:
             return None
         if self.recorder is not None:
             self.recorder.record_line(line)
-        message = parse_line(line)
+        message = parse_line_resilient(line)
         if self.bus is not None:
             self.bus.publish(message)
         return message
@@ -112,6 +141,6 @@ class SerialPump:
         while limit is None or seen < limit:
             message = self.pump_once()
             if message is None:
-                continue
+                break
             seen += 1
             yield message

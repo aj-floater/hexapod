@@ -201,6 +201,38 @@ Message: TypeAlias = (
 )
 
 
+def parse_line_resilient(line: str | bytes) -> Message:
+    if isinstance(line, bytes):
+        text = line.decode("utf-8", errors="replace")
+    else:
+        text = line
+
+    try:
+        return parse_line(text)
+    except ProtocolError as original_error:
+        cleaned = text.replace("\x00", "").strip()
+        if cleaned and cleaned != text.strip():
+            try:
+                return parse_line(cleaned)
+            except ProtocolError:
+                pass
+
+        search_start = 0
+        while True:
+            candidate_index = cleaned.find('{"type"', search_start)
+            if candidate_index < 0:
+                break
+            if candidate_index > 0:
+                candidate = cleaned[candidate_index:]
+                try:
+                    return parse_line(candidate)
+                except ProtocolError:
+                    pass
+            search_start = candidate_index + 1
+
+        raise original_error
+
+
 def _parse_command_arg_spec(raw: object) -> CommandArgSpec:
     if not isinstance(raw, Mapping):
         raise ProtocolError("command arg spec must be an object")
