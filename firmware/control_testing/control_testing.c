@@ -2,7 +2,9 @@
 #include <stdint.h>
 
 #include "pico/stdlib.h"
+#include "pico/time.h"
 
+#include "adc_input.h"
 #include "devlink_serial.h"
 #include "pio_uart_rx.h"
 
@@ -15,6 +17,14 @@
 #define COMMAND_BAUD 115200u        // UART speed
 #define COMMAND_BUFFER_LEN 256u     // max line length for a single JSON command
 #define COMMAND_IDLE_FLUSH_MS 80u   // how long to wait before flushing a partial line?
+#define ADC_C_GPIO 28u              // adc_c potentiometer input
+#define ADC_SAMPLE_PERIOD_MS 20u    // how often to publish pot samples
+#define ADC_C_RAW_MIN 0u            // minimum useful pot reading
+#define ADC_C_RAW_MAX 4080u         // maximum useful pot reading
+#define ADC_C_DEG_0_RAW 3935u       // rough 0 degree calibration point
+#define ADC_C_DEG_180_RAW 285u      // rough 180 degree calibration point
+#define ADC_C_MIN_DEG 0u            // minimum reported angle
+#define ADC_C_MAX_DEG 180u          // maximum reported angle
 
 // Parameter Ids
 enum {
@@ -24,6 +34,10 @@ enum {
 // App State
 typedef struct {
     bool status_led_on;
+    AdcInput adc_c;
+    uint32_t adc_raw_sample_seq;
+    uint32_t adc_angle_sample_seq;
+    absolute_time_t next_adc_sample_at;
 } ControlTestingApp;
 
 // Device Description
@@ -41,6 +55,19 @@ static bool control_testing_param_set(
     const char **out_error_message
 );
 
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_fields[] = {
+    {"adc_c_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+};
+
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_fields[] = {
+    {"adc_c_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
+};
+
+static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
+    {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
+    {"control_testing.angle", g_control_testing_angle_fields, count_of(g_control_testing_angle_fields)},
+};
+
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     {
         "status_led.on",
@@ -56,11 +83,11 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
 
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.1.0",
+    .firmware = "0.2.0",
     .commands = NULL,
     .command_count = 0u,
-    .streams = NULL,
-    .stream_count = 0u,
+    .streams = g_control_testing_streams,
+    .stream_count = count_of(g_control_testing_streams),
     .params = g_control_testing_params,
     .param_count = count_of(g_control_testing_params),
     .param_getter = control_testing_param_get,
@@ -68,21 +95,62 @@ static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
 };
 
 // LED Helpers
-
 // writes current app state to LED
 static void control_testing_apply_status_led(const ControlTestingApp *app) {
     hard_assert(app != NULL);
     gpio_put(PICO_DEFAULT_LED_PIN, app->status_led_on);
 }
+
+// ADC Helpers
 // sets up the LED GPIO as output
+// also sets up adc_c and sample timing
 static void control_testing_init(ControlTestingApp *app) {
+    absolute_time_t now = get_absolute_time();
+
     hard_assert(app != NULL);
 
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
+    adc_input_system_init();
+    adc_input_init(&app->adc_c, ADC_C_GPIO);
+
     app->status_led_on = false;
+    app->adc_raw_sample_seq = 0u;
+    app->adc_angle_sample_seq = 0u;
+    app->next_adc_sample_at = now;
+
     control_testing_apply_status_led(app);
+}
+
+// Calibration Helpers
+// clamps the raw adc value to the range we can actually use
+static uint16_t control_testing_bound_adc_raw(uint16_t raw_value) {
+    if (raw_value < ADC_C_RAW_MIN) {
+        return ADC_C_RAW_MIN;
+    }
+    if (raw_value > ADC_C_RAW_MAX) {
+        return ADC_C_RAW_MAX;
+    }
+    return raw_value;
+}
+
+// converts the bounded raw value into degrees using the rough calibration points
+static uint16_t control_testing_adc_raw_to_deg(uint16_t raw_value) {
+    uint32_t numerator = 0u;
+    uint32_t denominator = (uint32_t)(ADC_C_DEG_0_RAW - ADC_C_DEG_180_RAW);
+
+    raw_value = control_testing_bound_adc_raw(raw_value);
+
+    if (raw_value >= ADC_C_DEG_0_RAW) {
+        return ADC_C_MIN_DEG;
+    }
+    if (raw_value <= ADC_C_DEG_180_RAW) {
+        return ADC_C_MAX_DEG;
+    }
+
+    numerator = (uint32_t)(ADC_C_DEG_0_RAW - raw_value) * ADC_C_MAX_DEG;
+    return (uint16_t)((numerator + (denominator / 2u)) / denominator);
 }
 
 // Devlink Parameter Callbacks
@@ -105,6 +173,7 @@ static bool control_testing_param_get(
     *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
     return true;
 }
+
 // accepts a new value, stores it in the app state and updates LED
 static bool control_testing_param_set(
     void *context,
@@ -134,7 +203,52 @@ static bool control_testing_param_set(
     return true;
 }
 
-// Command Input - reads incoming UART bytes and turns them into complete JSON command lines
+// Devlink Samples
+// sends periodic adc samples so devlink can plot the pot value
+static void control_testing_emit_adc_sample(ControlTestingApp *app) {
+    uint16_t raw_value = 0u;
+    uint16_t angle_deg = 0u;
+    uint64_t sample_time_us = 0u;
+    DevlinkSerialValue values[count_of(g_control_testing_adc_fields)];
+    DevlinkSerialValue angle_values[count_of(g_control_testing_angle_fields)];
+
+    hard_assert(app != NULL);
+
+    raw_value = control_testing_bound_adc_raw(adc_input_read_raw(&app->adc_c));
+    angle_deg = control_testing_adc_raw_to_deg(raw_value);
+    sample_time_us = time_us_64();
+
+    values[0] = DEVLINK_SERIAL_VALUE_U16(raw_value);
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[0],
+        app->adc_raw_sample_seq++,
+        sample_time_us,
+        values
+    );
+
+    angle_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_deg);
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[1],
+        app->adc_angle_sample_seq++,
+        sample_time_us,
+        angle_values
+    );
+}
+
+static void control_testing_tick(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    if (!time_reached(app->next_adc_sample_at)) {
+        return;
+    }
+
+    control_testing_emit_adc_sample(app);
+    app->next_adc_sample_at = make_timeout_time_ms(ADC_SAMPLE_PERIOD_MS);
+}
+
+// Command Input
 static void control_testing_poll_commands(
     PioUartRx *command_rx,
     DevlinkSerialLineBuffer *line_buffer,
@@ -193,7 +307,9 @@ int main(void) {
     sleep_ms(200u);
 
     // init the LED
+    // also init adc_c and sample timing
     control_testing_init(&app);
+
     // start the PIO UART receiver
     if (!pio_uart_rx_init(&command_rx, pio0, COMMAND_RX_GPIO, COMMAND_BAUD)) {
         devlink_serial_print_log(&g_control_testing_device, "error", "pio rx init failed");
@@ -201,6 +317,7 @@ int main(void) {
             tight_loop_contents();
         }
     }
+
     // initialize the line buffer
     devlink_serial_line_buffer_init(
         &command_buffer,
@@ -208,6 +325,7 @@ int main(void) {
         sizeof(command_storage),
         COMMAND_IDLE_FLUSH_MS
     );
+
     // sends devlink discovery messages
     devlink_serial_print_discovery(&g_control_testing_device);
     devlink_serial_print_log(&g_control_testing_device, "info", "control_testing ready");
@@ -222,6 +340,7 @@ int main(void) {
             command_line,
             sizeof(command_line)
         );
+        control_testing_tick(&app);
         tight_loop_contents();
     }
 }
