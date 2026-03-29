@@ -15,7 +15,81 @@ from ..messages import (
 )
 from .controller import ConnectionConfig, GuiController
 from .plot_workspace import PlotWorkspaceWidget
-from .workspace import PlotWorkspace, WorkspaceStore, default_trace_color
+from .workspace import PlotWorkspace, WindowLayout, WindowLayoutStore, WorkspaceStore, default_trace_color
+
+PARAM_APPLY_TIMEOUT_MS = 5000
+LIVE_REFRESH_INTERVAL_MS = 33
+RAW_VIEW_REFRESH_INTERVAL_MS = 100
+
+
+class InlineIndicatorButton(QtWidgets.QPushButton):
+    def __init__(self, prefix: str, suffix: str, indicator_color: str, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__("", parent)
+        self._prefix = prefix
+        self._suffix = suffix
+        self._indicator_color = QtGui.QColor(indicator_color)
+
+    def set_segments(self, prefix: str, suffix: str, indicator_color: str) -> None:
+        self._prefix = prefix
+        self._suffix = suffix
+        self._indicator_color = QtGui.QColor(indicator_color)
+        self.updateGeometry()
+        self.update()
+
+    def sizeHint(self) -> QtCore.QSize:
+        base = super().sizeHint()
+        fm = self.fontMetrics()
+        indicator = 10
+        gap = 6
+        width = (
+            fm.horizontalAdvance(self._prefix)
+            + gap
+            + indicator
+            + gap
+            + fm.horizontalAdvance(self._suffix)
+            + 24
+        )
+        height = max(base.height(), fm.height() + 14)
+        return QtCore.QSize(width, height)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        painter = QtWidgets.QStylePainter(self)
+        option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = ""
+        option.icon = QtGui.QIcon()
+        painter.drawControl(QtWidgets.QStyle.ControlElement.CE_PushButton, option)
+
+        contents = self.style().subElementRect(
+            QtWidgets.QStyle.SubElement.SE_PushButtonContents,
+            option,
+            self,
+        )
+        fm = painter.fontMetrics()
+        indicator = 10
+        gap = 6
+        prefix_width = fm.horizontalAdvance(self._prefix)
+        suffix_width = fm.horizontalAdvance(self._suffix)
+        total_width = prefix_width + gap + indicator + gap + suffix_width
+        x = contents.x() + max(0, (contents.width() - total_width) // 2)
+        baseline = contents.y() + (contents.height() + fm.ascent() - fm.descent()) // 2
+
+        if not self.isEnabled():
+            painter.setOpacity(0.55)
+
+        text_color = self.palette().buttonText().color()
+        painter.setPen(text_color)
+        painter.drawText(x, baseline, self._prefix)
+        x += prefix_width + gap
+
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(self._indicator_color)
+        circle_y = contents.y() + (contents.height() - indicator) // 2
+        painter.drawEllipse(QtCore.QRectF(x, circle_y, indicator, indicator))
+        x += indicator + gap
+
+        painter.setPen(text_color)
+        painter.drawText(x, baseline, self._suffix)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -46,11 +120,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_param_values: dict[str, object] = {}
         self._param_apply_commands: dict[str, int] = {}
         self._apply_command_params: dict[int, str] = {}
+        self._param_apply_timers: dict[str, QtCore.QTimer] = {}
+        self._live_refresh_timer = QtCore.QTimer(self)
+        self._live_refresh_timer.setSingleShot(True)
+        self._live_refresh_timer.setInterval(LIVE_REFRESH_INTERVAL_MS)
+        self._live_refresh_timer.timeout.connect(self._flush_live_refresh)
+        self._plot_refresh_pending = False
+        self._values_refresh_pending = False
+        self._raw_view_timer = QtCore.QTimer(self)
+        self._raw_view_timer.setSingleShot(True)
+        self._raw_view_timer.setInterval(RAW_VIEW_REFRESH_INTERVAL_MS)
+        self._raw_view_timer.timeout.connect(self._flush_raw_view)
+        self._pending_raw_lines: list[str] = []
         self._device_names: list[str] = []
         self._stream_names: list[str] = []
         self._field_names: list[str] = []
         self._param_schema: tuple[ParamSpec, ...] = ()
         self._workspace_store = WorkspaceStore()
+        self._window_layout_store = WindowLayoutStore()
 
         self.setWindowTitle("Devlink Dashboard")
         self.resize(1400, 900)
@@ -77,6 +164,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self._toggle_connection()
         self._pending_port = None
 
+    def _configure_button(
+        self,
+        button: QtWidgets.QAbstractButton,
+        *,
+        icon: QtWidgets.QStyle.StandardPixmap | None = None,
+        text: str | None = None,
+        tooltip: str | None = None,
+    ) -> None:
+        if icon is not None:
+            button.setIcon(self.style().standardIcon(icon))
+        if text is not None:
+            button.setText(text)
+        if tooltip is not None:
+            button.setToolTip(tooltip)
+            button.setStatusTip(tooltip)
+
+    def _active_pane_details(self) -> tuple[PlotWorkspace | None, object | None, str, str]:
+        workspace = self._workspace
+        active_id = self._plot_workspace.active_pane_id
+        if workspace is None or active_id is None:
+            return (workspace, None, "Trace", "#8b96a5")
+        for index, pane in enumerate(workspace.panes):
+            if pane.id == active_id:
+                return (workspace, pane, pane.title, default_trace_color(index))
+        return (workspace, None, "Trace", "#8b96a5")
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._save_workspace_snapshot()
+        self._save_window_layout()
+        super().closeEvent(event)
+
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget(self)
         root_layout = QtWidgets.QVBoxLayout(central)
@@ -95,6 +213,12 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self._port_combo)
 
         self._refresh_ports_button = QtWidgets.QPushButton("Refresh")
+        self._configure_button(
+            self._refresh_ports_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_BrowserReload,
+            text="",
+            tooltip="Refresh serial ports",
+        )
         toolbar.addWidget(self._refresh_ports_button)
 
         toolbar.addWidget(QtWidgets.QLabel("Baud"))
@@ -111,9 +235,21 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self._record_path_edit, 1)
 
         self._browse_button = QtWidgets.QPushButton("Browse")
+        self._configure_button(
+            self._browse_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_DialogOpenButton,
+            text="",
+            tooltip="Choose session log file",
+        )
         toolbar.addWidget(self._browse_button)
 
         self._connect_button = QtWidgets.QPushButton("Connect")
+        self._configure_button(
+            self._connect_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_MediaPlay,
+            text="Connect",
+            tooltip="Connect to the selected serial device",
+        )
         toolbar.addWidget(self._connect_button)
 
         self._banner = QtWidgets.QLabel()
@@ -122,9 +258,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._banner.setMargin(6)
         root_layout.addWidget(self._banner)
 
-        body_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        body_splitter.setChildrenCollapsible(False)
-        root_layout.addWidget(body_splitter, 1)
+        self._body_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self._body_splitter.setChildrenCollapsible(False)
+        root_layout.addWidget(self._body_splitter, 1)
 
         left_panel = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_panel)
@@ -144,12 +280,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._field_list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
         left_layout.addWidget(self._field_list, 1)
 
-        self._add_trace_button = QtWidgets.QPushButton("Add Field To Active Pane")
+        self._add_trace_button = InlineIndicatorButton("Add Selected Trace to", "", "#8b96a5")
+        self._add_trace_button.setToolTip("Add the selected field to the active pane")
         left_layout.addWidget(self._add_trace_button)
-        body_splitter.addWidget(left_panel)
-
-        center_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
-        center_splitter.setChildrenCollapsible(False)
+        self._body_splitter.addWidget(left_panel)
 
         plot_panel = QtWidgets.QWidget()
         plot_layout = QtWidgets.QVBoxLayout(plot_panel)
@@ -161,23 +295,72 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workspace_label = QtWidgets.QLabel("No plot workspace loaded")
         workspace_toolbar.addWidget(self._workspace_label, 1)
         self._add_pane_button = QtWidgets.QPushButton("Add Pane")
+        self._configure_button(
+            self._add_pane_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_FileDialogNewFolder,
+            text="Add Pane",
+            tooltip="Add a new plot pane",
+        )
         workspace_toolbar.addWidget(self._add_pane_button)
         self._duplicate_pane_button = QtWidgets.QPushButton("Duplicate Pane")
+        self._configure_button(
+            self._duplicate_pane_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView,
+            text="Duplicate Pane",
+            tooltip="Duplicate the active pane",
+        )
         workspace_toolbar.addWidget(self._duplicate_pane_button)
         self._remove_pane_button = QtWidgets.QPushButton("Remove Pane")
+        self._configure_button(
+            self._remove_pane_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_DialogDiscardButton,
+            text="Remove Pane",
+            tooltip="Remove the active pane",
+        )
         workspace_toolbar.addWidget(self._remove_pane_button)
         plot_layout.addLayout(workspace_toolbar)
 
         self._plot_workspace = PlotWorkspaceWidget()
         plot_layout.addWidget(self._plot_workspace, 1)
-        center_splitter.addWidget(plot_panel)
+        self._body_splitter.addWidget(plot_panel)
 
-        value_panel = QtWidgets.QWidget()
-        value_layout = QtWidgets.QVBoxLayout(value_panel)
-        value_layout.setContentsMargins(0, 0, 0, 0)
-        value_layout.setSpacing(8)
+        self._tab_widget = QtWidgets.QTabWidget()
+        self._body_splitter.addWidget(self._tab_widget)
+
+        self._pane_tab = self._build_pane_tab()
+        self._params_tab = self._build_params_tab()
+        self._commands_tab = self._build_commands_tab()
+        self._events_tab = self._build_events_tab()
+        self._logs_tab = self._build_logs_tab()
+        self._raw_tab = self._build_raw_tab()
+
+        self._tab_widget.addTab(self._pane_tab, "Pane")
+        self._tab_widget.addTab(self._params_tab, "Params")
+        self._tab_widget.addTab(self._commands_tab, "Commands")
+        self._tab_widget.addTab(self._events_tab, "Events")
+        self._tab_widget.addTab(self._logs_tab, "Logs")
+        self._tab_widget.addTab(self._raw_tab, "Raw NDJSON")
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        self._body_splitter.setSizes([220, 860, 360])
+        self._restore_window_layout()
+
+        self.statusBar().showMessage("Ready")
+
+    def _build_pane_tab(self) -> QtWidgets.QWidget:
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
         self._values_label = QtWidgets.QLabel("Pane Values")
-        value_layout.addWidget(self._values_label)
+        layout.addWidget(self._values_label)
+
+        self._values_state_label = QtWidgets.QLabel("No active traces in this pane")
+        self._values_state_label.setWordWrap(True)
+        self._values_state_label.setStyleSheet("color: #8b96a5;")
+        layout.addWidget(self._values_state_label)
+
         self._value_table = QtWidgets.QTableWidget(0, 3)
         self._value_table.setHorizontalHeaderLabels(["Field", "Value", "Unit"])
         self._value_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
@@ -186,30 +369,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._value_table.verticalHeader().setVisible(False)
         self._value_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self._value_table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
-        value_layout.addWidget(self._value_table, 1)
-        center_splitter.addWidget(value_panel)
+        layout.addWidget(self._value_table, 1)
 
-        body_splitter.addWidget(center_splitter)
-
-        self._tab_widget = QtWidgets.QTabWidget()
-        body_splitter.addWidget(self._tab_widget)
-
-        self._params_tab = self._build_params_tab()
-        self._commands_tab = self._build_commands_tab()
-        self._events_tab = self._build_events_tab()
-        self._logs_tab = self._build_logs_tab()
-        self._raw_tab = self._build_raw_tab()
-
-        self._tab_widget.addTab(self._params_tab, "Params")
-        self._tab_widget.addTab(self._commands_tab, "Commands")
-        self._tab_widget.addTab(self._events_tab, "Events")
-        self._tab_widget.addTab(self._logs_tab, "Logs")
-        self._tab_widget.addTab(self._raw_tab, "Raw NDJSON")
-
-        body_splitter.setSizes([220, 720, 460])
-        center_splitter.setSizes([560, 240])
-
-        self.statusBar().showMessage("Ready")
+        return widget
 
     def _build_params_tab(self) -> QtWidgets.QWidget:
         widget = QtWidgets.QWidget()
@@ -222,6 +384,12 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self._params_state_label)
 
         self._refresh_params_button = QtWidgets.QPushButton("Refresh Params")
+        self._configure_button(
+            self._refresh_params_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_BrowserReload,
+            text="Refresh Params",
+            tooltip="Read current parameter values from the device",
+        )
         self._refresh_params_button.clicked.connect(self._refresh_params_from_device)
         layout.addWidget(self._refresh_params_button)
 
@@ -258,9 +426,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._command_response_label.setWordWrap(True)
         layout.addWidget(self._command_response_label)
 
-        send_button = QtWidgets.QPushButton("Send Command")
-        send_button.clicked.connect(self._send_selected_command)
-        layout.addWidget(send_button)
+        self._send_command_button = QtWidgets.QPushButton("Send Command")
+        self._configure_button(
+            self._send_command_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_ArrowForward,
+            text="Send Command",
+            tooltip="Send the selected command to the device",
+        )
+        self._send_command_button.clicked.connect(self._send_selected_command)
+        layout.addWidget(self._send_command_button)
         layout.addStretch(1)
         return widget
 
@@ -307,6 +481,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_button.clicked.connect(self._toggle_connection)
         self._device_list.currentTextChanged.connect(self._on_device_selected)
         self._stream_list.currentTextChanged.connect(self._on_stream_selected)
+        self._field_list.currentTextChanged.connect(lambda _text: self._refresh_discovery_views())
         self._field_list.itemDoubleClicked.connect(lambda _item: self._add_selected_field_to_active_pane())
         self._add_trace_button.clicked.connect(self._add_selected_field_to_active_pane)
         self._add_pane_button.clicked.connect(self._plot_workspace.add_pane)
@@ -316,7 +491,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._event_filter.currentTextChanged.connect(self._refresh_events_view)
         self._log_filter.currentTextChanged.connect(self._refresh_logs_view)
         self._plot_workspace.workspace_changed.connect(self._on_workspace_changed)
+        self._plot_workspace.add_trace_requested.connect(lambda _pane_id: self._add_selected_field_to_active_pane())
         self._plot_workspace.active_pane_changed.connect(lambda _pane_id: self._refresh_values_table())
+        self._plot_workspace.active_pane_changed.connect(lambda _pane_id: self._refresh_discovery_views())
 
         self._controller.ports_changed.connect(self._refresh_port_combo)
         self._controller.session_reset.connect(self._on_session_reset)
@@ -339,11 +516,16 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(5000, lambda: self._banner.setVisible(False))
 
     def _append_raw_line(self, line: str) -> None:
-        self._raw_view.appendPlainText(line)
+        self._pending_raw_lines.append(line)
+        if self._tab_widget.currentWidget() is self._raw_tab and not self._raw_view_timer.isActive():
+            self._raw_view_timer.start()
 
     def _on_parse_error(self, error: str) -> None:
-        self._raw_view.appendPlainText(f"[parse-error] {error}")
-        self._show_status(error, error=True)
+        self._pending_raw_lines.append(f"[host-sync] {error}")
+        if self._tab_widget.currentWidget() is self._raw_tab and not self._raw_view_timer.isActive():
+            self._raw_view_timer.start()
+        if self._tab_widget.currentWidget() is self._logs_tab:
+            self._refresh_logs_view()
 
     def _refresh_port_combo(self) -> None:
         current = self._selected_port()
@@ -413,6 +595,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _on_session_reset(self) -> None:
+        self._live_refresh_timer.stop()
+        self._plot_refresh_pending = False
+        self._values_refresh_pending = False
+        self._raw_view_timer.stop()
+        self._pending_raw_lines = []
+        self._clear_all_param_apply_timers()
         self._selected_device = None
         self._selected_stream = None
         self._workspace = None
@@ -448,7 +636,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_discovery_views()
 
     def _on_connection_state_changed(self, connected: bool) -> None:
-        self._connect_button.setText("Disconnect" if connected else "Connect")
+        if not connected:
+            self._live_refresh_timer.stop()
+            self._plot_refresh_pending = False
+            self._values_refresh_pending = False
+            self._raw_view_timer.stop()
+            self._pending_raw_lines = []
+            self._clear_all_param_apply_timers()
+            self._param_apply_commands = {}
+            self._apply_command_params = {}
+            for param_name in list(self._param_row_indexes.keys()):
+                self._update_param_row_state(param_name)
+        if connected:
+            self._configure_button(
+                self._connect_button,
+                icon=QtWidgets.QStyle.StandardPixmap.SP_BrowserStop,
+                text="Disconnect",
+                tooltip="Disconnect from the current serial device",
+            )
+        else:
+            self._configure_button(
+                self._connect_button,
+                icon=QtWidgets.QStyle.StandardPixmap.SP_MediaPlay,
+                text="Connect",
+                tooltip="Connect to the selected serial device",
+            )
         self._port_combo.setEnabled(not connected)
         self._baud_spin.setEnabled(not connected)
         self._refresh_ports_button.setEnabled(not connected)
@@ -520,7 +732,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._field_list.clear()
             return
 
-        names = [field.name for field in self._controller.runtime.field_specs_for_stream(self._selected_device, self._selected_stream)]
+        names = self._controller.runtime.numeric_field_names(self._selected_device, self._selected_stream)
         if names == self._field_names:
             return
 
@@ -599,13 +811,18 @@ class MainWindow(QtWidgets.QMainWindow):
         pane = next((entry for entry in workspace.panes if entry.id == active), None)
         if pane is None:
             return
+        if any(trace.stream == self._selected_stream and trace.field == item.text() for trace in pane.traces):
+            self._show_status(f"{self._selected_stream}.{item.text()} is already in the active pane")
+            return
         color = default_trace_color(len(pane.traces))
         self._plot_workspace.add_trace(self._selected_stream, item.text(), color)
+        self._show_status(f"added {self._selected_stream}.{item.text()} to {pane.title}")
 
     def _on_device_selected(self, device: str) -> None:
         previous_device = self._selected_device
         self._selected_device = device or None
         if previous_device != self._selected_device:
+            self._clear_all_param_apply_timers()
             self._param_visual_states = {}
             self._pending_param_values = {}
             self._param_apply_commands = {}
@@ -653,12 +870,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._refresh_stream_list()
                     self._refresh_field_list()
                 self._maybe_seed_default_workspace()
-                self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-                self._refresh_values_table()
+                self._schedule_live_refresh()
         elif isinstance(message, RespMessage):
             param_name = self._apply_command_params.pop(message.id, None)
             if param_name is not None and self._param_apply_commands.get(param_name) == message.id:
                 self._param_apply_commands.pop(param_name, None)
+                self._clear_param_apply_timer(param_name)
             suffix = ""
             if message.ok and message.result is not None:
                 suffix = f" result={dict(message.result)}"
@@ -679,26 +896,101 @@ class MainWindow(QtWidgets.QMainWindow):
         self._workspace = workspace
         self._workspace_user_modified = True
         self._workspace_label.setText(f"Workspace for {workspace.device}")
+        self._save_workspace_snapshot()
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._refresh_values_table()
+
+    def _save_workspace_snapshot(self) -> None:
+        workspace = self._plot_workspace.current_workspace_snapshot()
+        if workspace is None:
+            return
+        self._workspace = workspace
         try:
             self._workspace_store.save(workspace)
         except Exception as exc:
             self._show_status(f"failed to save layout: {exc}", error=True)
-        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
-        self._refresh_values_table()
+
+    def _restore_window_layout(self) -> None:
+        try:
+            layout = self._window_layout_store.load()
+        except Exception as exc:
+            self._show_status(f"failed to load window layout: {exc}", error=True)
+            return
+        if layout is None:
+            return
+        if layout.body_splitter_state:
+            state = QtCore.QByteArray.fromBase64(layout.body_splitter_state.encode("ascii"))
+            if self._body_splitter.restoreState(state):
+                return
+        if layout.body_splitter_sizes:
+            self._body_splitter.setSizes(list(layout.body_splitter_sizes))
+
+    def _save_window_layout(self) -> None:
+        sizes = tuple(size for size in self._body_splitter.sizes() if size > 0)
+        if not sizes:
+            return
+        try:
+            splitter_state = bytes(self._body_splitter.saveState().toBase64()).decode("ascii")
+            self._window_layout_store.save(
+                WindowLayout(
+                    body_splitter_sizes=sizes,
+                    body_splitter_state=splitter_state,
+                )
+            )
+        except Exception as exc:
+            self._show_status(f"failed to save window layout: {exc}", error=True)
+
+    def _schedule_live_refresh(self, *, plot: bool = True, values: bool = True) -> None:
+        self._plot_refresh_pending = self._plot_refresh_pending or plot
+        self._values_refresh_pending = self._values_refresh_pending or values
+        if not self._live_refresh_timer.isActive():
+            self._live_refresh_timer.start()
+
+    def _flush_live_refresh(self) -> None:
+        if self._plot_refresh_pending:
+            self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        if self._values_refresh_pending:
+            self._refresh_values_table()
+        self._plot_refresh_pending = False
+        self._values_refresh_pending = False
+
+    def _flush_raw_view(self) -> None:
+        if self._tab_widget.currentWidget() is not self._raw_tab:
+            return
+        if self._pending_raw_lines:
+            self._raw_view.appendPlainText("\n".join(self._pending_raw_lines))
+            self._pending_raw_lines = []
+
+    def _reload_raw_view(self) -> None:
+        self._raw_view.setPlainText("\n".join(self._controller.runtime.raw_lines))
+        self._pending_raw_lines = []
+
+    def _on_tab_changed(self, _index: int) -> None:
+        current = self._tab_widget.currentWidget()
+        if current is self._raw_tab:
+            self._reload_raw_view()
+        elif current is self._logs_tab:
+            self._refresh_logs_view()
+        elif current is self._events_tab:
+            self._refresh_events_view()
 
     def _refresh_values_table(self) -> None:
         if self._selected_device is None:
             self._values_label.setText("Pane Values")
             self._value_table.setRowCount(0)
+            self._values_state_label.setText("No active device")
+            self._values_state_label.setVisible(True)
             return
 
         values = self._plot_workspace.active_trace_values(self._controller.runtime, self._selected_device)
         active_pane = self._plot_workspace.active_pane_id
         active_title = None
+        active_pane_trace_count = 0
         if self._workspace is not None and active_pane is not None:
             for pane in self._workspace.panes:
                 if pane.id == active_pane:
                     active_title = pane.title
+                    active_pane_trace_count = len(pane.traces)
                     break
         self._values_label.setText("Pane Values" if active_title is None else f"Pane Values ({active_title})")
         self._value_table.setRowCount(len(values))
@@ -706,6 +998,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self._value_table.setItem(row, 0, QtWidgets.QTableWidgetItem(label))
             self._value_table.setItem(row, 1, QtWidgets.QTableWidgetItem("" if value is None else str(value)))
             self._value_table.setItem(row, 2, QtWidgets.QTableWidgetItem(unit))
+
+        has_non_empty_value = any(value is not None for _, value, _ in values)
+        if active_pane is None:
+            state_message = "No active pane"
+        elif active_pane_trace_count == 0:
+            state_message = "No active traces in this pane"
+        elif not has_non_empty_value:
+            state_message = "Waiting for samples for this pane"
+        else:
+            state_message = ""
+        self._values_state_label.setText(state_message)
+        self._values_state_label.setVisible(bool(state_message))
 
     def _refresh_params_from_device(self) -> None:
         if self._selected_device is None:
@@ -848,6 +1152,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if command_id is not None:
             self._param_apply_commands[param_name] = command_id
             self._apply_command_params[command_id] = param_name
+            self._start_param_apply_timer(param_name, command_id)
             self._update_param_row_state(param_name)
 
     def _refresh_command_specs(self) -> None:
@@ -961,6 +1266,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 if level_filter != "all" and log.level != level_filter:
                     continue
                 lines.append(f"{log.level} {log.msg}")
+        if level_filter in {"all", "info"}:
+            lines.extend(f"info [host-sync] {error}" for error in self._controller.runtime.parse_errors)
         self._logs_view.setPlainText("\n".join(lines))
 
     def _parse_text_scalar(self, raw: str) -> object:
@@ -989,6 +1296,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_discovery_views(self) -> None:
         device_model = self._controller.runtime.get_device(self._selected_device)
         has_capabilities = device_model is not None and device_model.capabilities is not None
+        _workspace, active_pane, active_title, active_color = self._active_pane_details()
 
         if has_capabilities:
             params_message = "" if self._current_param_specs else "No parameters available for this device."
@@ -1015,7 +1323,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._commands_state_label.setText(commands_message)
         self._command_combo.setEnabled(has_capabilities and bool(self._current_command_specs))
         self._command_form_container.setEnabled(has_capabilities and bool(self._current_command_specs))
-        self._add_trace_button.setEnabled(has_capabilities and self._selected_stream is not None)
+        self._add_trace_button.set_segments("Add Selected Trace to", "", active_color)
+        self._add_trace_button.setToolTip(
+            f"Add the selected field to {active_title}" if active_pane is not None else "Add the selected field to the active pane"
+        )
+        self._add_trace_button.setEnabled(
+            has_capabilities
+            and self._selected_stream is not None
+            and self._field_list.currentItem() is not None
+            and self._plot_workspace.active_pane_id is not None
+        )
         workspace_ready = self._selected_device is not None and self._controller.is_connected
         self._add_pane_button.setEnabled(workspace_ready)
         self._duplicate_pane_button.setEnabled(workspace_ready and self._plot_workspace.active_pane_id is not None)
@@ -1234,3 +1551,34 @@ class MainWindow(QtWidgets.QMainWindow):
                 apply_button.setToolTip("Apply this pending edit to the board")
             else:
                 apply_button.setToolTip("")
+
+    def _start_param_apply_timer(self, param_name: str, command_id: int) -> None:
+        self._clear_param_apply_timer(param_name)
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(PARAM_APPLY_TIMEOUT_MS)
+        timer.timeout.connect(lambda name=param_name, expected_id=command_id: self._on_param_apply_timeout(name, expected_id))
+        self._param_apply_timers[param_name] = timer
+        timer.start()
+
+    def _clear_param_apply_timer(self, param_name: str) -> None:
+        timer = self._param_apply_timers.pop(param_name, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
+    def _clear_all_param_apply_timers(self) -> None:
+        for param_name in list(self._param_apply_timers.keys()):
+            self._clear_param_apply_timer(param_name)
+
+    def _on_param_apply_timeout(self, param_name: str, command_id: int) -> None:
+        active_command_id = self._param_apply_commands.get(param_name)
+        if active_command_id != command_id:
+            self._clear_param_apply_timer(param_name)
+            return
+
+        self._param_apply_commands.pop(param_name, None)
+        self._apply_command_params.pop(command_id, None)
+        self._clear_param_apply_timer(param_name)
+        self._update_param_row_state(param_name)
+        self._show_status(f"timed out applying {param_name}; you can retry", error=True)

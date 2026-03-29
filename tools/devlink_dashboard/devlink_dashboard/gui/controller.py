@@ -14,13 +14,15 @@ from ..messages import (
     RespMessage,
     SampleMessage,
     build_cmd_message,
-    parse_line,
+    parse_line_resilient,
 )
 from ..session import JsonlRecorder
 from ..transport import SerialPortInfo, SerialTransport, SerialUnavailableError, list_serial_port_infos
 from .runtime import DashboardRuntime
 
-DISCOVERY_TIMEOUT_MS = 1000
+DISCOVERY_TIMEOUT_MS = 3000
+DISCOVERY_RETRY_INTERVAL_MS = 250
+MAX_LINES_PER_POLL = 200
 
 
 @dataclass(frozen=True)
@@ -96,14 +98,31 @@ class ConnectionWorker(QtCore.QObject):
         if self._transport is None:
             return
 
-        try:
-            line = self._transport.readline()
-        except Exception as exc:
-            self.connection_error.emit(str(exc))
-            self.stop()
-            return
+        lines_read = 0
+        while lines_read < MAX_LINES_PER_POLL:
+            try:
+                line = self._transport.readline()
+            except Exception as exc:
+                self.connection_error.emit(str(exc))
+                self.stop()
+                return
 
-        if line is None or line == "":
+            if line is None:
+                return
+
+            lines_read += 1
+            self._handle_line(line)
+
+            try:
+                if self._transport.pending_input_bytes() <= 0:
+                    return
+            except Exception as exc:
+                self.connection_error.emit(str(exc))
+                self.stop()
+                return
+
+    def _handle_line(self, line: str) -> None:
+        if line == "":
             return
 
         if self._recorder is not None:
@@ -111,8 +130,11 @@ class ConnectionWorker(QtCore.QObject):
         self.raw_line_received.emit(line)
 
         try:
-            message = parse_line(line)
+            message = parse_line_resilient(line)
         except ProtocolError as exc:
+            cleaned = line.replace("\x00", "").strip()
+            if cleaned == "" or not cleaned.startswith("{") or not cleaned.endswith("}"):
+                return
             self.parse_error_received.emit(str(exc), line)
             return
 
@@ -157,6 +179,9 @@ class GuiController(QtCore.QObject):
         self._discovery_timer.setSingleShot(True)
         self._discovery_timer.setInterval(DISCOVERY_TIMEOUT_MS)
         self._discovery_timer.timeout.connect(self._on_discovery_timeout)
+        self._discovery_retry_timer = QtCore.QTimer(self)
+        self._discovery_retry_timer.setInterval(DISCOVERY_RETRY_INTERVAL_MS)
+        self._discovery_retry_timer.timeout.connect(self._send_discovery_request)
 
     @property
     def is_connected(self) -> bool:
@@ -222,7 +247,8 @@ class GuiController(QtCore.QObject):
         self.session_reset.emit()
         self._set_discovery_state("pending")
         self._discovery_timer.start()
-        self._discovery_command_id = self.send_command(device="*", name="device.describe", args={})
+        self._discovery_retry_timer.start()
+        self._send_discovery_request()
         if self._current_config is not None:
             self.status_message.emit(
                 f"connected to {self._current_config.port} @ {self._current_config.baud}"
@@ -232,6 +258,7 @@ class GuiController(QtCore.QObject):
     @QtCore.Slot()
     def _on_disconnected(self) -> None:
         self._discovery_timer.stop()
+        self._discovery_retry_timer.stop()
         self._discovery_command_id = None
         self._set_discovery_state("idle")
         if self._thread is not None:
@@ -266,6 +293,7 @@ class GuiController(QtCore.QObject):
 
         if isinstance(message, CapabilitiesMessage):
             self._discovery_timer.stop()
+            self._discovery_retry_timer.stop()
             self._discovery_command_id = None
             self._set_discovery_state("ready")
             self.send_command(device=message.device, name="param.list", args={})
@@ -276,18 +304,22 @@ class GuiController(QtCore.QObject):
                 not message.ok and
                 self._discovery_state != "ready"
             ):
-                self._discovery_timer.stop()
-                self._discovery_command_id = None
-                self._set_discovery_state("failed")
-                self.status_message.emit("device description unavailable; try reset or update firmware")
+                self.status_message.emit("device describe not accepted yet; retrying")
 
     @QtCore.Slot()
     def _on_discovery_timeout(self) -> None:
         if self._discovery_state == "ready":
             return
+        self._discovery_retry_timer.stop()
         self._discovery_command_id = None
         self._set_discovery_state("failed")
         self.status_message.emit("no capabilities received; try reset or update firmware")
+
+    @QtCore.Slot()
+    def _send_discovery_request(self) -> None:
+        if self._worker is None or self._discovery_state == "ready":
+            return
+        self._discovery_command_id = self.send_command(device="*", name="device.describe", args={})
 
     def _set_discovery_state(self, state: str) -> None:
         if self._discovery_state == state:

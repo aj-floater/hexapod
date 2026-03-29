@@ -38,6 +38,7 @@ class WorkspaceTests(unittest.TestCase):
                 PlotPane(
                     id="pane-1",
                     title="State",
+                    size=320,
                     traces=(
                         PlotTrace(stream="status_led.state", field="blink_period_ms", color="#0b84f3"),
                     ),

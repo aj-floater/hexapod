@@ -42,6 +42,7 @@ class PlotPane:
     title: str
     x_group: str = DEFAULT_X_GROUP
     traces: tuple[PlotTrace, ...] = field(default_factory=tuple)
+    size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,12 @@ class PlotWorkspace:
     panes: tuple[PlotPane, ...]
     active_pane_id: str | None = None
     version: int = LAYOUT_VERSION
+
+
+@dataclass(frozen=True)
+class WindowLayout:
+    body_splitter_sizes: tuple[int, ...] = ()
+    body_splitter_state: str | None = None
 
 
 def default_trace_color(index: int) -> str:
@@ -71,6 +78,10 @@ def default_workspace_root() -> Path:
     return path / "workspaces"
 
 
+def default_layout_root() -> Path:
+    return default_workspace_root().parent
+
+
 def workspace_to_dict(workspace: PlotWorkspace) -> dict[str, object]:
     return {
         "version": workspace.version,
@@ -81,6 +92,7 @@ def workspace_to_dict(workspace: PlotWorkspace) -> dict[str, object]:
                 "id": pane.id,
                 "title": pane.title,
                 "x_group": pane.x_group,
+                "size": pane.size,
                 "traces": [
                     {
                         "stream": trace.stream,
@@ -126,6 +138,7 @@ def workspace_from_dict(raw: object, *, device: str | None = None) -> PlotWorksp
         pane_id = pane_raw.get("id")
         title = pane_raw.get("title")
         x_group = pane_raw.get("x_group", DEFAULT_X_GROUP)
+        size = pane_raw.get("size")
         traces_raw = pane_raw.get("traces", [])
         if not isinstance(pane_id, str) or not pane_id:
             raise ValueError("pane id must be a string")
@@ -133,6 +146,8 @@ def workspace_from_dict(raw: object, *, device: str | None = None) -> PlotWorksp
             raise ValueError("pane title must be a string")
         if not isinstance(x_group, str) or not x_group:
             raise ValueError("pane x_group must be a string")
+        if size is not None and (not isinstance(size, int) or size <= 0):
+            raise ValueError("pane size must be a positive integer or null")
         if not isinstance(traces_raw, list):
             raise ValueError("pane traces must be a list")
 
@@ -171,6 +186,7 @@ def workspace_from_dict(raw: object, *, device: str | None = None) -> PlotWorksp
                 title=title,
                 x_group=x_group,
                 traces=tuple(traces),
+                size=size,
             )
         )
 
@@ -200,4 +216,37 @@ class WorkspaceStore:
         path = self.path_for_device(workspace.device)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = workspace_to_dict(workspace)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+class WindowLayoutStore:
+    def __init__(self, root_dir: Path | None = None) -> None:
+        self._root_dir = root_dir or default_layout_root()
+
+    @property
+    def _path(self) -> Path:
+        return self._root_dir / "window_layout.json"
+
+    def load(self) -> WindowLayout | None:
+        path = self._path
+        if not path.exists():
+            return None
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("window layout payload must be an object")
+        sizes = raw.get("body_splitter_sizes", [])
+        state = raw.get("body_splitter_state")
+        if not isinstance(sizes, list) or any(not isinstance(size, int) or size <= 0 for size in sizes):
+            raise ValueError("body_splitter_sizes must be a list of positive integers")
+        if state is not None and not isinstance(state, str):
+            raise ValueError("body_splitter_state must be a string or null")
+        return WindowLayout(body_splitter_sizes=tuple(sizes), body_splitter_state=state)
+
+    def save(self, layout: WindowLayout) -> None:
+        path = self._path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "body_splitter_sizes": list(layout.body_splitter_sizes),
+            "body_splitter_state": layout.body_splitter_state,
+        }
         path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
