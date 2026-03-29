@@ -36,7 +36,10 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(control_testing control_testing.c)
+add_executable(control_testing
+    control_testing.c
+    adc_input.c
+)
 devlink_serial_enable_for_target(control_testing)
 devlink_pio_uart_rx_enable_for_target(control_testing)
 
@@ -56,7 +59,8 @@ pico_enable_stdio_usb(control_testing 0)
 
 # Add the standard library to the build
 target_link_libraries(control_testing
-        pico_stdlib)
+        pico_stdlib
+        hardware_adc)
 
 # Add the standard include files to the build
 target_include_directories(control_testing PRIVATE
