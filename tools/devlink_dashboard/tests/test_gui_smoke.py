@@ -54,6 +54,25 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_record_output_path_is_timestamped_in_selected_directory(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        record_path = window._build_record_output_path("/tmp/devlink-recordings", "/dev/ttyACM0")
+
+        record_file = Path(record_path)
+        self.assertEqual(record_file.parent, Path("/tmp/devlink-recordings"))
+        self.assertEqual(record_file.suffix, ".jsonl")
+        self.assertRegex(record_file.name, r"^devlink-ttyACM0-\d{8}-\d{6}\.jsonl$")
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_controller_retries_device_describe_until_ready(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
