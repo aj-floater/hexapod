@@ -39,12 +39,13 @@ pico_sdk_init()
 add_executable(control_testing
     control_testing.c
     adc_input.c
+    motor_pwm.c
 )
 devlink_serial_enable_for_target(control_testing)
 devlink_pio_uart_rx_enable_for_target(control_testing)
 
 pico_set_program_name(control_testing "control_testing")
-pico_set_program_version(control_testing "0.1")
+pico_set_program_version(control_testing "0.5.0")
 
 target_compile_definitions(control_testing PRIVATE
     PICO_DEFAULT_UART=1
@@ -60,7 +61,8 @@ pico_enable_stdio_usb(control_testing 0)
 # Add the standard library to the build
 target_link_libraries(control_testing
         pico_stdlib
-        hardware_adc)
+        hardware_adc
+        hardware_pwm)
 
 # Add the standard include files to the build
 target_include_directories(control_testing PRIVATE
