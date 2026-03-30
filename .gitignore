@@ -57,3 +57,6 @@ __pycache__/
 *.egg-info/
 
 .vscode
+
+# Linux desktop metadata
+.directory
