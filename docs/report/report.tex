@@ -1,0 +1,223 @@
+% !TeX program = lualatex
+\begin{filecontents*}{\jobname.xmpdata}
+  \Title{Development and Testing of a Full-Stack Multi Micro Servo Driver Board for Use with Small Legged Robots}
+  \Author{11394375}
+  \Language{en-GB}
+  \Copyrighted{True}
+\end{filecontents*}
+
+\documentclass[11pt,beng]{../reference/Template/uom_eee_dissertation_casson}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{tabularx}
+
+\usepackage[
+  style=ieee,
+  backend=biber,
+  backref=true,
+  hyperref=auto,
+  maxbibnames=3,
+  minbibnames=1
+]{biblatex}
+\DefineBibliographyStrings{english}{
+  backrefpage = {cited on p\adddot},
+  backrefpages = {cited on pp\adddot}
+}
+\addbibresource{references.bib}
+
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
+
+\newcommand{\studentname}{Archie Orwin James}
+\newcommand{\supervisorname}{Dr Michael O'Toole}
+\newcommand{\reportsubtitle}{Third Year Individual Project -- Final Report}
+
+\makeatletter
+\def\maketitle{
+  \begin{titlepage}
+    \hypertarget{TitlePage}{}
+    \bookmark[dest=TitlePage,level=-1]{Front matter}
+    \phantomsection\pdfbookmark[section]{Title page}{title}
+
+    \begin{tikzpicture}[overlay, remember picture]
+      \node[outer sep=0,inner sep=0,anchor=north west]
+      at ($(current page.north west)+(\logopad,-\logopad)$) {
+        \includegraphics[
+          alt={University of Manchester logo},
+          width=\logowidth,
+          keepaspectratio=true
+        ]{../reference/Template/images/uom_logo.pdf}
+      };
+    \end{tikzpicture}
+
+    \begin{center}
+      \vspace*{\fill}
+      {\Large \bfseries \@title\par}
+      \vspace{0.8cm}
+      {\large \emph{Interim title}\par}
+      \vspace{2cm}
+      {\Large \reportsubtitle\par}
+      \vspace{2cm}
+      {\textbf{Date of submission}\par}
+      \@submitdate\par
+      \vspace{1.5cm}
+      {\textbf{Author}\par}
+      \studentname\par
+      \vspace{1.2cm}
+      {\textbf{Student ID}\par}
+      \@studentid\par
+      \vspace{1.2cm}
+      {\textbf{Supervisor}\par}
+      \supervisorname\par
+      \vspace{1.5cm}
+      \@school
+      \vspace*{\fill}
+    \end{center}
+  \end{titlepage}
+
+  \pagenumbering{arabic}
+  \setcounter{page}{2}
+}
+\makeatother
+
+\begin{document}
+\title{Development and Testing of a Full-Stack Multi Micro Servo Driver Board for Use with Small Legged Robots}
+\studentid{11394375}
+\course{Mechatronic Engineering}
+\faculty{Science and Engineering}
+\school{School of Engineering}
+\submitdate{April 2026}
+\wordcount{TBC}
+\maketitle
+
+\uomtoc
+
+\begin{abstract}
+This report presents the design and early validation plan for a compact multi-servo driver board intended for use in small legged robots. The project focuses on replacing a collection of separate development boards and ad hoc wiring with a more integrated electronics platform that can distribute power, generate control signals, and support the wider embedded control stack of a small hexapod.
+
+The current draft establishes the initial report structure, defines the core design problem, and sets out the main areas of literature review, design, fabrication, and testing that will be developed in the full report. Particular attention is given to compact packaging, power integrity, firmware structure, and the practical constraints imposed by micro servos in lightweight walking robots.
+\end{abstract}
+
+\begin{uomoriginality}
+I hereby confirm that this dissertation is my own original work unless referenced clearly to the contrary, and that no portion of the work referred to in this dissertation has been submitted in support of an application for another degree or qualification of this or any other university or other institute of learning.
+\end{uomoriginality}
+\phantomsection
+\addcontentsline{toc}{section}{Intellectual property statement}
+\section*{Intellectual property statement}
+\begin{enumerate}[label=\roman*.]
+  \item The author of this dissertation, including any appendices and schedules, owns certain copyright or related rights in it and has granted The University of Manchester certain rights to use that material for administrative purposes.
+  \item Copies of this dissertation, whether in full or in extracts and whether in hard copy or electronic form, may be made only in accordance with the Copyright, Designs and Patents Act 1988, related regulations, or any licensing agreements in force at the time.
+  \item The ownership of certain patents, designs, trademarks, or other intellectual property described in this dissertation may belong to third parties. Such material must not be reproduced or used without prior written permission from the relevant owner.
+  \item Further information on the conditions governing disclosure, publication, and commercialisation is available through the University intellectual property policy, any relevant dissertation restriction declarations, and the University Library regulations.
+\end{enumerate}
+\clearpage
+
+\phantomsection
+\addcontentsline{toc}{section}{Acknowledgements}
+\section*{Acknowledgements}
+I would like to thank Dr Michael O'Toole for his supervision and guidance throughout this project. I am also grateful to the technical staff and wider course team whose support makes iterative electronics and robotics work possible.
+\clearpage
+
+\uomstartmainbody
+
+\section{Introduction}
+
+\subsection{Background and motivation}
+Small legged robots can traverse terrain that is difficult for wheeled platforms, but they do so under tight constraints on mass, volume, power delivery, and actuator coordination. A small hexapod in particular requires many joints in a limited space, which quickly exposes the limitations of wiring together separate controller boards, regulators, and servo breakout hardware.
+
+Off-the-shelf micro servo solutions are useful for early prototyping, but they often provide limited observability, awkward packaging, and poor scalability once the robot grows beyond a simple bench test. A more integrated driver board offers a route toward cleaner packaging, more repeatable testing, and tighter control of the electrical and firmware interfaces used across the robot.
+
+This project therefore focuses on the development of a full-stack multi micro servo driver board for a small legged robot platform. The board is intended to form a foundation for coordinated actuation, cleaner internal wiring, and future expansion toward richer sensing and more advanced control.
+
+\subsection{Aims and objectives}
+The main aim of this project is to design, fabricate, and validate a compact electronics platform that can support multiple micro servos within the physical and electrical constraints of a small hexapod robot.
+
+The supporting objectives are:
+\begin{itemize}[leftmargin=*]
+  \item define the electrical, mechanical, and firmware requirements of a multi-servo driver board for a small legged robot;
+  \item design a PCB architecture that supports reliable servo power delivery, signal generation, and controller communication;
+  \item package the electronics so that they are practical to mount, maintain, and integrate into the robot body;
+  \item implement firmware that supports coordinated actuation, calibration, debugging, and future system expansion;
+  \item evaluate the design through bench-level and robot-level testing.
+\end{itemize}
+
+\section{Literature Review}
+
+The literature review will position this project against existing work in smart servos, compact robot electronics, battery-backed embedded systems, and legged robot integration. The review will be used to justify the architectural decisions taken in later sections of the report and to identify the main technical trade-offs between performance, size, cost, and complexity.
+
+\subsection{Closed-loop hobby servo conversion}
+Existing hobby servo retrofit projects show that low-cost actuators can be extended with additional sensing, local control, and digital communication. This is relevant to the present work because it highlights practical methods for moving beyond simple open-loop PWM control while still retaining the low mass and low cost of micro servo hardware.
+
+\subsection{Embedded servo driver electronics}
+Compact multi-channel driver boards must balance microcontroller capability, timing accuracy, noise sensitivity, connector density, and thermal constraints. Prior art in embedded actuator electronics provides useful guidance for selecting communication interfaces, distributing power, and separating sensitive logic circuitry from high transient current paths.
+
+\subsection{Power delivery and battery management}
+Small mobile robots are heavily constrained by their power system. Literature on battery management, charging, regulation, and transient suppression is therefore important for understanding how servo current spikes, supply droop, and power-path decisions can affect system reliability and behaviour during walking.
+
+\subsection{Legged robot integration}
+The report will also consider work on small legged robot integration, particularly where actuator layout, wiring complexity, body packaging, and maintainability influence overall robot performance. This helps frame the driver board not as an isolated PCB, but as part of a wider electromechanical system.
+
+\subsection{Literature review conclusion}
+The literature review will be used to define the specific gap addressed by this project: a compact and practical driver platform that is tailored to the constraints of small legged robots rather than adapted from larger actuator systems or general-purpose development hardware.
+
+\section{Design and fabrication}
+
+\subsection{Design requirement}
+\label{sec:design-requirement}
+The board requirements are driven by the practical demands of a small hexapod platform. At this stage, the design requirements can be summarised as shown in Table~\ref{tab:requirements}.
+
+\begin{table}[H]
+  \centering
+  \caption{Initial design requirements for the servo driver board.}
+  \label{tab:requirements}
+  \begin{tabularx}{\linewidth}{lY}
+    \toprule
+    \textbf{Requirement} & \textbf{Rationale} \\
+    \midrule
+    Multi-servo support & The board must drive enough micro servos to support coordinated motion in a small legged robot without relying on multiple loosely coupled controller boards. \\
+    Compact footprint & The final hardware must fit within the body envelope of the robot and avoid unnecessary increases in mass and rotational inertia. \\
+    Stable power delivery & The power system must tolerate short current spikes from multiple servos without repeated brownout events or excessive supply ripple. \\
+    Clean integration & Connectors, routing, and board layout should reduce cable clutter and simplify assembly, maintenance, and troubleshooting. \\
+    Firmware extensibility & The embedded software should support calibration, test instrumentation, and future expansion toward richer feedback or higher-level control. \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+\subsection{Mechanical Design}
+The mechanical design section will describe how the board geometry, connector placement, and mounting arrangement were chosen to suit the internal packaging of the robot. This includes the relationship between the board outline and the body structure, the accessibility of cable runs, and any compromises made to balance compactness against ease of manufacture and maintenance.
+
+\subsection{Electronic Design}
+The electronic design section will describe the microcontroller choice, servo signal generation strategy, power architecture, regulation, protection, and communication interfaces. Particular attention will be paid to the separation between logic and high-current servo paths, as this is central to overall reliability in a dense multi-servo system.
+
+\subsection{Firmware Design}
+The firmware design section will cover the software architecture used to initialise the board, command multiple servos, expose debugging interfaces, and support repeatable testing. It will also document how the firmware is structured to allow future extension toward additional sensing, calibration routines, and tighter integration with the wider robot control stack.
+
+\section{Testing and analysis}
+
+Testing will be used to assess the design at both board and system level. The planned evaluation includes electrical bring-up checks, validation of power rails under representative load, confirmation of signal integrity across servo channels, and integration tests once the hardware is installed in the robot platform.
+
+The analysis will compare measured behaviour against the requirements defined in Section~\ref{sec:design-requirement}. This section will be used to identify where the design meets its goals, where revisions are required, and which limitations arise from the choice of micro servos, packaging, or power architecture.
+
+\section{Conclusions and future work}
+
+This section will summarise the outcome of the project against the original aims and draw together the main design, fabrication, and testing results. It will provide a concise assessment of how successful the developed board was as a practical platform for small legged robots.
+
+\subsection{Project Reflection}
+The project reflection will examine the engineering decisions made during the work, including what was successful, which assumptions proved weak, and how the design process could be improved in future iterations. Reflection will focus on both the technical work and the way the project was scoped, scheduled, and validated.
+
+\subsection{Future Work}
+Future work is expected to include further board revision, additional sensing or feedback capability, expanded firmware functionality, and broader testing on the full robot platform. This subsection will distinguish clearly between immediate next-step improvements and longer-term extensions that sit beyond the current project scope.
+
+\printbibliography[heading=bibintoc,title={References}]
+
+\begin{uomappendix}
+\section{Supplementary material}
+This appendix section can be used for extended schematics, layout notes, firmware listings, additional test data, and supporting calculations that would interrupt the flow of the main report.
+\end{uomappendix}
+
+\end{document}
