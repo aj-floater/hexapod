@@ -1,0 +1,10 @@
+{"type":"cmd","version":1,"device":"*","id":1,"name":"device.describe","args":{}}
+{"type":"hello","version":1,"device":"control_testing","protocol":"devlink","firmware":"0.1.0"}
+{"type":"capabilities","version":1,"device":"control_testing","commands":[{"name":"device.describe","args":[]},{"name":"param.list","args":[]},{"name":"param.get","args":[{"name":"param","type":"string","required":true}]},{"name":"param.set","args":[{"name":"param","type":"string","required":true},{"name":"value","type":"integer","required":true}]}],"streams":[],"params":[{"name":"status_led.on","type":"bool","access":"rw","default":false}]}
+{"type":"resp","version":1,"device":"control_testing","id":1,"ok":true}
+{"type":"cmd","version":1,"device":"control_testing","id":2,"name":"param.list","args":{}}
+{"type":"resp","version":1,"device":"control_testing","id":2,"ok":true,"result":{"params":[{"name":"status_led.on","value":true}]}}
+{"type":"cmd","version":1,"device":"control_testing","id":3,"name":"param.set","args":{"param":"status_led.on","value":false}}
+{"type":"resp","version":1,"device":"control_testing","id":3,"ok":true,"result":{"param":"status_led.on","value":false}}
+{"type":"cmd","version":1,"device":"control_testing","id":4,"name":"param.set","args":{"param":"status_led.on","value":true}}
+{"type":"resp","version":1,"device":"control_testing","id":4,"ok":true,"result":{"param":"status_led.on","value":true}}
