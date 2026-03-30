@@ -25,10 +25,9 @@
 #define ADC_LP_ALPHA_MAX_PCT 100u   // maximum low pass alpha
 #define ADC_C_RAW_MIN 0u            // minimum useful pot reading
 #define ADC_C_RAW_MAX 4080u         // maximum useful pot reading
-#define ADC_C_DEG_0_RAW 3935u       // rough 0 degree calibration point
-#define ADC_C_DEG_180_RAW 285u      // rough 180 degree calibration point
 #define ADC_C_MIN_DEG 0u            // minimum reported angle
 #define ADC_C_MAX_DEG 180u          // maximum reported angle
+#define ADC_C_TENTHS_PER_DEG 10u    // one decimal place for reported angle
 #define ANGLE_SOURCE_AVG 0u         // angle uses averaged adc
 #define ANGLE_SOURCE_LP 1u          // angle uses low pass adc
 #define ANGLE_SOURCE_BOTH 2u        // angle uses both averaged and low pass adc
@@ -55,6 +54,11 @@ typedef struct {
     uint32_t adc_angle_lp_sample_seq;
     absolute_time_t next_adc_sample_at;
 } ControlTestingApp;
+
+typedef struct {
+    uint16_t deg;
+    uint16_t raw;
+} ControlTestingCalibrationPoint;
 
 // Device Description
 // tells the devlink library what this device supports
@@ -84,11 +88,11 @@ static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_lp_fields[
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_avg_fields[] = {
-    {"adc_c_avg_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
+    {"adc_c_avg_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_lp_fields[] = {
-    {"adc_c_lp_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
+    {"adc_c_lp_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
 };
 
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
@@ -132,9 +136,31 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     },
 };
 
+static const ControlTestingCalibrationPoint g_control_testing_calibration_points[] = {
+    {0u, 3943u},
+    {10u, 3746u},
+    {20u, 3575u},
+    {30u, 3386u},
+    {40u, 3199u},
+    {50u, 3006u},
+    {60u, 2811u},
+    {70u, 2602u},
+    {80u, 2396u},
+    {90u, 2192u},
+    {100u, 1977u},
+    {110u, 1761u},
+    {120u, 1560u},
+    {130u, 1366u},
+    {140u, 1148u},
+    {150u, 950u},
+    {160u, 707u},
+    {170u, 509u},
+    {180u, 285u},
+};
+
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.3.0",
+    .firmware = "0.4.0",
     .commands = NULL,
     .command_count = 0u,
     .streams = g_control_testing_streams,
@@ -193,22 +219,47 @@ static uint16_t control_testing_bound_adc_raw(uint16_t raw_value) {
     return raw_value;
 }
 
-// converts the bounded raw value into degrees using the rough calibration points
-static uint16_t control_testing_adc_raw_to_deg(uint16_t raw_value) {
-    uint32_t numerator = 0u;
-    uint32_t denominator = (uint32_t)(ADC_C_DEG_0_RAW - ADC_C_DEG_180_RAW);
+// converts the bounded raw value into degrees using the measured calibration points
+static uint16_t control_testing_adc_raw_to_deg_tenths(uint16_t raw_value) {
+    const ControlTestingCalibrationPoint *upper_point = NULL;
+    const ControlTestingCalibrationPoint *lower_point = NULL;
+    uint32_t raw_span = 0u;
+    uint32_t raw_offset = 0u;
+    uint32_t deg_span = 0u;
+    uint32_t interpolated_deg_tenths = 0u;
 
     raw_value = control_testing_bound_adc_raw(raw_value);
 
-    if (raw_value >= ADC_C_DEG_0_RAW) {
-        return ADC_C_MIN_DEG;
+    if (raw_value >= g_control_testing_calibration_points[0].raw) {
+        return (uint16_t)(g_control_testing_calibration_points[0].deg * ADC_C_TENTHS_PER_DEG);
     }
-    if (raw_value <= ADC_C_DEG_180_RAW) {
-        return ADC_C_MAX_DEG;
+    if (raw_value <= g_control_testing_calibration_points[count_of(g_control_testing_calibration_points) - 1u].raw) {
+        return (uint16_t)(
+            g_control_testing_calibration_points[count_of(g_control_testing_calibration_points) - 1u].deg
+            * ADC_C_TENTHS_PER_DEG
+        );
     }
 
-    numerator = (uint32_t)(ADC_C_DEG_0_RAW - raw_value) * ADC_C_MAX_DEG;
-    return (uint16_t)((numerator + (denominator / 2u)) / denominator);
+    for (size_t point_index = 0u; point_index + 1u < count_of(g_control_testing_calibration_points); point_index++) {
+        upper_point = &g_control_testing_calibration_points[point_index];
+        lower_point = &g_control_testing_calibration_points[point_index + 1u];
+
+        if (raw_value <= upper_point->raw && raw_value >= lower_point->raw) {
+            raw_span = (uint32_t)(upper_point->raw - lower_point->raw);
+            raw_offset = (uint32_t)(upper_point->raw - raw_value);
+            deg_span = (uint32_t)(lower_point->deg - upper_point->deg);
+            interpolated_deg_tenths = (uint32_t)(upper_point->deg * ADC_C_TENTHS_PER_DEG)
+                + ((raw_offset * deg_span * ADC_C_TENTHS_PER_DEG) + (raw_span / 2u)) / raw_span;
+            return (uint16_t)interpolated_deg_tenths;
+        }
+    }
+
+    return (uint16_t)(ADC_C_MAX_DEG * ADC_C_TENTHS_PER_DEG);
+}
+
+// converts internal tenths-of-a-degree values into float degrees for devlink
+static float control_testing_deg_tenths_to_f32(uint16_t deg_tenths) {
+    return (float)deg_tenths / (float)ADC_C_TENTHS_PER_DEG;
 }
 
 // Filter Helpers
@@ -316,8 +367,8 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     uint16_t raw_value = 0u;
     uint16_t avg_raw_value = 0u;
     uint16_t lp_raw_value = 0u;
-    uint16_t angle_avg_deg = 0u;
-    uint16_t angle_lp_deg = 0u;
+    uint16_t angle_avg_deg_tenths = 0u;
+    uint16_t angle_lp_deg_tenths = 0u;
     uint64_t sample_time_us = 0u;
     DevlinkSerialValue values[count_of(g_control_testing_adc_fields)];
     DevlinkSerialValue avg_values[count_of(g_control_testing_adc_avg_fields)];
@@ -332,8 +383,8 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
         adc_input_read_average_raw(&app->adc_c, ADC_AVERAGE_SAMPLE_COUNT)
     );
     lp_raw_value = control_testing_update_adc_lp(app, avg_raw_value);
-    angle_avg_deg = control_testing_adc_raw_to_deg(avg_raw_value);
-    angle_lp_deg = control_testing_adc_raw_to_deg(lp_raw_value);
+    angle_avg_deg_tenths = control_testing_adc_raw_to_deg_tenths(avg_raw_value);
+    angle_lp_deg_tenths = control_testing_adc_raw_to_deg_tenths(lp_raw_value);
     sample_time_us = time_us_64();
 
     values[0] = DEVLINK_SERIAL_VALUE_U16(raw_value);
@@ -364,7 +415,9 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     );
 
     if (control_testing_should_emit_angle_avg(app)) {
-        angle_avg_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_avg_deg);
+        angle_avg_values[0] = DEVLINK_SERIAL_VALUE_F32(
+            control_testing_deg_tenths_to_f32(angle_avg_deg_tenths)
+        );
         devlink_serial_print_sample(
             &g_control_testing_device,
             &g_control_testing_streams[3],
@@ -375,7 +428,9 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     }
 
     if (control_testing_should_emit_angle_lp(app)) {
-        angle_lp_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_lp_deg);
+        angle_lp_values[0] = DEVLINK_SERIAL_VALUE_F32(
+            control_testing_deg_tenths_to_f32(angle_lp_deg_tenths)
+        );
         devlink_serial_print_sample(
             &g_control_testing_device,
             &g_control_testing_streams[4],

@@ -265,6 +265,28 @@ static bool parse_uint32_value(const char *cursor, uint32_t *out_value) {
     return true;
 }
 
+static bool parse_float32_value(const char *cursor, float *out_value) {
+    char *end = NULL;
+    float parsed = 0.0f;
+
+    if (cursor == NULL || out_value == NULL) {
+        return false;
+    }
+
+    cursor = skip_ws(cursor);
+    parsed = strtof(cursor, &end);
+    if (end == cursor) {
+        return false;
+    }
+    end = (char *)skip_ws(end);
+    if (*end != ',' && *end != '}' && *end != ']') {
+        return false;
+    }
+
+    *out_value = parsed;
+    return true;
+}
+
 static const char *scalar_type_to_string(DevlinkSerialScalarType type) {
     switch (type) {
         case DEVLINK_SERIAL_TYPE_BOOL:
@@ -279,6 +301,8 @@ static const char *scalar_type_to_string(DevlinkSerialScalarType type) {
             return "i16";
         case DEVLINK_SERIAL_TYPE_I32:
             return "i32";
+        case DEVLINK_SERIAL_TYPE_F32:
+            return "f32";
         default:
             return "unknown";
     }
@@ -286,6 +310,24 @@ static const char *scalar_type_to_string(DevlinkSerialScalarType type) {
 
 static const char *access_to_string(DevlinkSerialAccess access) {
     return (access == DEVLINK_SERIAL_ACCESS_RW) ? "rw" : "ro";
+}
+
+static void print_float32_value(float value) {
+    char buffer[32] = {0};
+    size_t len = 0u;
+
+    snprintf(buffer, sizeof(buffer), "%.3f", (double)value);
+    len = strlen(buffer);
+
+    while (len > 0u && buffer[len - 1u] == '0') {
+        buffer[--len] = '\0';
+    }
+    if (len > 0u && buffer[len - 1u] == '.') {
+        buffer[len++] = '0';
+        buffer[len] = '\0';
+    }
+
+    printf("%s", buffer);
 }
 
 static void print_scalar_value(DevlinkSerialScalarType type, DevlinkSerialValue value) {
@@ -301,6 +343,9 @@ static void print_scalar_value(DevlinkSerialScalarType type, DevlinkSerialValue 
         case DEVLINK_SERIAL_TYPE_I16:
         case DEVLINK_SERIAL_TYPE_I32:
             printf("%ld", (long)value.i32_value);
+            break;
+        case DEVLINK_SERIAL_TYPE_F32:
+            print_float32_value(value.f32_value);
             break;
         default:
             printf("null");
@@ -322,6 +367,8 @@ static bool value_fits_type(DevlinkSerialScalarType type, DevlinkSerialValue val
             return value.i32_value >= INT16_MIN && value.i32_value <= INT16_MAX;
         case DEVLINK_SERIAL_TYPE_I32:
             return true;
+        case DEVLINK_SERIAL_TYPE_F32:
+            return true;
         default:
             return false;
     }
@@ -338,6 +385,8 @@ static bool values_equal(DevlinkSerialScalarType type, DevlinkSerialValue lhs, D
         case DEVLINK_SERIAL_TYPE_I16:
         case DEVLINK_SERIAL_TYPE_I32:
             return lhs.i32_value == rhs.i32_value;
+        case DEVLINK_SERIAL_TYPE_F32:
+            return lhs.f32_value == rhs.f32_value;
         default:
             return false;
     }
@@ -358,6 +407,8 @@ static bool value_out_of_bounds(const DevlinkSerialParamDescriptor *param, Devli
         case DEVLINK_SERIAL_TYPE_I16:
         case DEVLINK_SERIAL_TYPE_I32:
             return value.i32_value < param->min_value.i32_value || value.i32_value > param->max_value.i32_value;
+        case DEVLINK_SERIAL_TYPE_F32:
+            return value.f32_value < param->min_value.f32_value || value.f32_value > param->max_value.f32_value;
         default:
             return true;
     }
@@ -414,6 +465,7 @@ static bool parse_value_for_type(
 ) {
     int32_t int_value = 0;
     uint32_t uint_value = 0u;
+    float float_value = 0.0f;
 
     switch (type) {
         case DEVLINK_SERIAL_TYPE_BOOL:
@@ -433,6 +485,12 @@ static bool parse_value_for_type(
                 return false;
             }
             out_value->i32_value = int_value;
+            return value_fits_type(type, *out_value);
+        case DEVLINK_SERIAL_TYPE_F32:
+            if (!devlink_serial_json_get_float32(json_object, key, &float_value)) {
+                return false;
+            }
+            out_value->f32_value = float_value;
             return value_fits_type(type, *out_value);
         default:
             return false;
@@ -1166,4 +1224,14 @@ bool devlink_serial_json_get_int32(const char *json_object, const char *key, int
     }
 
     return parse_int32_value(value, out_value);
+}
+
+bool devlink_serial_json_get_float32(const char *json_object, const char *key, float *out_value) {
+    const char *value = find_object_key_value(json_object, key);
+
+    if (value == NULL) {
+        return false;
+    }
+
+    return parse_float32_value(value, out_value);
 }

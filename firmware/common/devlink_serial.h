@@ -52,7 +52,8 @@ typedef enum {
     DEVLINK_SERIAL_TYPE_U16,
     DEVLINK_SERIAL_TYPE_U32,
     DEVLINK_SERIAL_TYPE_I16,
-    DEVLINK_SERIAL_TYPE_I32
+    DEVLINK_SERIAL_TYPE_I32,
+    DEVLINK_SERIAL_TYPE_F32
 } DevlinkSerialScalarType;
 
 typedef enum {
@@ -64,6 +65,7 @@ typedef union {
     bool bool_value;
     uint32_t u32_value;
     int32_t i32_value;
+    float f32_value;
 } DevlinkSerialValue;
 
 #define DEVLINK_SERIAL_VALUE_BOOL(v) ((DevlinkSerialValue){.bool_value = (v)})
@@ -72,6 +74,7 @@ typedef union {
 #define DEVLINK_SERIAL_VALUE_U32(v) ((DevlinkSerialValue){.u32_value = (uint32_t)(v)})
 #define DEVLINK_SERIAL_VALUE_I16(v) ((DevlinkSerialValue){.i32_value = (int32_t)(int16_t)(v)})
 #define DEVLINK_SERIAL_VALUE_I32(v) ((DevlinkSerialValue){.i32_value = (int32_t)(v)})
+#define DEVLINK_SERIAL_VALUE_F32(v) ((DevlinkSerialValue){.f32_value = (float)(v)})
 
 typedef struct {
     const char *name;
@@ -230,5 +233,6 @@ bool devlink_serial_json_get_string(
 );
 bool devlink_serial_json_get_bool(const char *json_object, const char *key, bool *out_value);
 bool devlink_serial_json_get_int32(const char *json_object, const char *key, int32_t *out_value);
+bool devlink_serial_json_get_float32(const char *json_object, const char *key, float *out_value);
 
 #endif
