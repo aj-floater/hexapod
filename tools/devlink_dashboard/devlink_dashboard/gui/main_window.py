@@ -118,6 +118,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._command_widgets: dict[str, tuple[str, QtWidgets.QWidget]] = {}
         self._param_editors: dict[str, tuple[str, QtWidgets.QWidget]] = {}
         self._param_apply_buttons: dict[str, QtWidgets.QPushButton] = {}
+        self._param_cards: dict[str, QtWidgets.QFrame] = {}
+        self._param_name_labels: dict[str, QtWidgets.QLabel] = {}
+        self._param_current_labels: dict[str, QtWidgets.QLabel] = {}
         self._param_row_indexes: dict[str, int] = {}
         self._param_visual_states: dict[str, tuple[bool, bool]] = {}
         self._pending_param_values: dict[str, object] = {}
@@ -313,6 +316,14 @@ class MainWindow(QtWidgets.QMainWindow):
             tooltip="Duplicate the active pane",
         )
         workspace_toolbar.addWidget(self._duplicate_pane_button)
+        self._export_plot_button = QtWidgets.QPushButton("Export Plot")
+        self._configure_button(
+            self._export_plot_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton,
+            text="Export Plot",
+            tooltip="Export the active plot pane as a high-resolution image",
+        )
+        workspace_toolbar.addWidget(self._export_plot_button)
         self._remove_pane_button = QtWidgets.QPushButton("Remove Pane")
         self._configure_button(
             self._remove_pane_button,
@@ -369,15 +380,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_params_button.clicked.connect(self._refresh_params_from_device)
         layout.addWidget(self._refresh_params_button)
 
-        self._param_table = QtWidgets.QTableWidget(0, 5)
-        self._param_table.setHorizontalHeaderLabels(["Name", "Type", "Current", "Edit", "Action"])
-        self._param_table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self._param_table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self._param_table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self._param_table.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        self._param_table.horizontalHeader().setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        self._param_table.verticalHeader().setVisible(False)
-        layout.addWidget(self._param_table, 1)
+        self._param_list_scroll = QtWidgets.QScrollArea()
+        self._param_list_scroll.setWidgetResizable(True)
+        self._param_list_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._param_list_container = QtWidgets.QWidget()
+        self._param_list_layout = QtWidgets.QVBoxLayout(self._param_list_container)
+        self._param_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._param_list_layout.setSpacing(8)
+        self._param_list_layout.addStretch(1)
+        self._param_list_scroll.setWidget(self._param_list_container)
+        layout.addWidget(self._param_list_scroll, 1)
         return widget
 
     def _build_commands_tab(self) -> QtWidgets.QWidget:
@@ -462,6 +474,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._add_trace_button.clicked.connect(self._add_selected_field_to_active_pane)
         self._add_pane_button.clicked.connect(self._plot_workspace.add_pane)
         self._duplicate_pane_button.clicked.connect(self._plot_workspace.duplicate_active_pane)
+        self._export_plot_button.clicked.connect(self._export_active_plot)
         self._remove_pane_button.clicked.connect(self._confirm_remove_active_pane)
         self._command_combo.currentIndexChanged.connect(self._rebuild_command_form)
         self._event_filter.currentTextChanged.connect(self._refresh_events_view)
@@ -542,6 +555,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self._record_checkbox.setChecked(True)
             self._record_path_edit.setText(path)
 
+    def _record_output_directory(self) -> Path:
+        directory_text = self._record_path_edit.text().strip()
+        if directory_text:
+            path = Path(directory_text).expanduser()
+            if path.suffix.lower() == ".jsonl":
+                return path.parent if str(path.parent) else Path.cwd()
+            return path
+        return Path.cwd() / "firmware" / "recordings"
+
     def _build_record_output_path(self, directory_text: str, port: str) -> str:
         directory = Path(directory_text).expanduser()
         port_name = Path(port).name or "serial"
@@ -549,6 +571,38 @@ class MainWindow(QtWidgets.QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         filename = f"devlink-{safe_port_name}-{timestamp}.jsonl"
         return str(directory / filename)
+
+    def _build_plot_export_path(self, directory: Path, device: str, pane_title: str) -> Path:
+        safe_device = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in device) or "device"
+        safe_pane_title = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in pane_title) or "pane"
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return directory / f"plot-{safe_device}-{safe_pane_title}-{timestamp}.png"
+
+    def _export_active_plot(self) -> None:
+        workspace = self._plot_workspace.workspace
+        active_pane_id = self._plot_workspace.active_pane_id
+        if workspace is None or active_pane_id is None:
+            self._show_status("choose or create a plot pane first", error=True)
+            return
+
+        active_pane = next((pane for pane in workspace.panes if pane.id == active_pane_id), None)
+        if active_pane is None:
+            self._show_status("active pane is unavailable", error=True)
+            return
+
+        export_directory = self._record_output_directory()
+        export_directory.mkdir(parents=True, exist_ok=True)
+        export_path = self._build_plot_export_path(export_directory, workspace.device, active_pane.title)
+
+        try:
+            if not self._plot_workspace.export_active_pane_image(str(export_path)):
+                self._show_status("active plot pane is unavailable", error=True)
+                return
+        except Exception as exc:
+            self._show_status(f"failed to export plot: {exc}", error=True)
+            return
+
+        self._show_status(f"exported plot to {export_path}")
 
     def _toggle_connection(self) -> None:
         if self._controller.is_connected:
@@ -562,11 +616,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         record_path = None
         if self._record_checkbox.isChecked():
-            record_directory = self._record_path_edit.text().strip()
-            if not record_directory:
-                self._show_status("choose a recording directory or disable recording", error=True)
-                return
-            record_path = self._build_record_output_path(record_directory, port)
+            record_directory = self._record_output_directory()
+            record_path = self._build_record_output_path(str(record_directory), port)
 
         self._controller.connect_to(
             ConnectionConfig(
@@ -602,7 +653,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._field_list.clear()
         self._plot_workspace.set_workspace(None)
         self._workspace_label.setText("No plot workspace loaded")
-        self._param_table.setRowCount(0)
+        self._clear_param_records()
         self._events_view.clear()
         self._logs_view.clear()
         self._raw_view.clear()
@@ -612,6 +663,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._command_widgets = {}
         self._param_editors = {}
         self._param_apply_buttons = {}
+        self._param_cards = {}
+        self._param_name_labels = {}
+        self._param_current_labels = {}
         self._param_row_indexes = {}
         self._param_visual_states = {}
         self._command_combo.clear()
@@ -992,51 +1046,83 @@ class MainWindow(QtWidgets.QMainWindow):
         self._param_schema = tuple(self._current_param_specs)
         self._param_editors = {}
         self._param_apply_buttons = {}
+        self._param_cards = {}
+        self._param_name_labels = {}
+        self._param_current_labels = {}
         self._param_row_indexes = {}
         self._param_visual_states = {}
-        self._param_table.setRowCount(len(self._current_param_specs))
+        self._clear_param_records()
 
-        for row, spec in enumerate(self._current_param_specs):
-            self._param_row_indexes[spec.name] = row
+        for index, spec in enumerate(self._current_param_specs):
+            self._param_row_indexes[spec.name] = index
             current_value = self._current_param_value(spec, device_model)
             editor_value = self._pending_param_values.get(spec.name, current_value)
-
-            name_item = QtWidgets.QTableWidgetItem(spec.name)
-            name_item.setToolTip(spec.name)
-            self._param_table.setItem(row, 0, name_item)
-            self._param_table.setItem(row, 1, QtWidgets.QTableWidgetItem(spec.type))
-            self._param_table.setItem(row, 2, QtWidgets.QTableWidgetItem(str(current_value)))
 
             editor_kind, editor = self._create_param_editor(spec, editor_value)
             self._connect_param_editor(spec.name, editor_kind, editor)
             self._param_editors[spec.name] = (editor_kind, editor)
-            self._param_table.setCellWidget(row, 3, editor)
+
+            card = QtWidgets.QFrame()
+            card.setObjectName("paramRecord")
+            card_layout = QtWidgets.QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(8)
+
+            name_label = QtWidgets.QLabel(spec.name)
+            name_label.setProperty("role", "name")
+            name_label.setToolTip(spec.name)
+            name_label.setWordWrap(True)
+            name_font = name_label.font()
+            name_font.setBold(True)
+            name_label.setFont(name_font)
+            card_layout.addWidget(name_label)
+
+            details_layout = QtWidgets.QHBoxLayout()
+            details_layout.setContentsMargins(0, 0, 0, 0)
+            details_layout.setSpacing(12)
+
+            current_label = QtWidgets.QLabel(str(current_value))
+            current_label.setProperty("role", "value")
+            current_label.setToolTip(str(current_value))
+            details_layout.addWidget(self._create_param_detail_group("Type", QtWidgets.QLabel(spec.type)))
+            details_layout.addWidget(self._create_param_detail_group("Current", current_label))
+            details_layout.addWidget(self._create_param_detail_group("Edit", editor), 1)
 
             if spec.access == "rw":
-                button = QtWidgets.QPushButton("Apply")
-                button.pressed.connect(lambda name=spec.name: self._apply_param(name))
-                self._param_apply_buttons[spec.name] = button
-                self._param_table.setCellWidget(row, 4, button)
+                action_widget = QtWidgets.QPushButton("Apply")
+                action_widget.pressed.connect(lambda name=spec.name: self._apply_param(name))
+                self._param_apply_buttons[spec.name] = action_widget
             else:
-                self._param_table.setItem(row, 4, QtWidgets.QTableWidgetItem("read-only"))
+                action_widget = QtWidgets.QLabel("Read only")
+            details_layout.addWidget(self._create_param_detail_group("Action", action_widget))
+
+            card_layout.addLayout(details_layout)
+            self._param_list_layout.addWidget(card)
+
+            self._param_cards[spec.name] = card
+            self._param_name_labels[spec.name] = name_label
+            self._param_current_labels[spec.name] = current_label
             self._update_param_row_state(spec.name)
 
+        self._param_list_layout.addStretch(1)
+
     def _refresh_existing_param_rows(self, device_model) -> None:
-        if self._param_table.rowCount() != len(self._current_param_specs):
+        if len(self._param_row_indexes) != len(self._current_param_specs):
             self._rebuild_params_table(device_model)
             return
 
-        for row, spec in enumerate(self._current_param_specs):
-            if self._param_row_indexes.get(spec.name) != row:
+        for index, spec in enumerate(self._current_param_specs):
+            if self._param_row_indexes.get(spec.name) != index:
                 self._rebuild_params_table(device_model)
                 return
 
             current_value = self._current_param_value(spec, device_model)
-            current_item = self._param_table.item(row, 2)
-            if current_item is None:
-                current_item = QtWidgets.QTableWidgetItem()
-                self._param_table.setItem(row, 2, current_item)
-            current_item.setText(str(current_value))
+            current_label = self._param_current_labels.get(spec.name)
+            if current_label is None:
+                self._rebuild_params_table(device_model)
+                return
+            current_label.setText(str(current_value))
+            current_label.setToolTip(str(current_value))
 
             editor_info = self._param_editors.get(spec.name)
             if editor_info is None:
@@ -1049,6 +1135,30 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_param_editor_value(editor_info[0], editor_info[1], current_value)
 
             self._update_param_row_state(spec.name)
+
+    def _clear_param_records(self) -> None:
+        while self._param_list_layout.count():
+            item = self._param_list_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _create_param_detail_group(self, title: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        caption = QtWidgets.QLabel(title)
+        caption.setProperty("role", "caption")
+        caption_font = caption.font()
+        if caption_font.pointSize() > 1:
+            caption_font.setPointSize(caption_font.pointSize() - 1)
+        caption.setFont(caption_font)
+
+        layout.addWidget(caption)
+        layout.addWidget(widget)
+        return container
 
     def _create_param_editor(self, spec: ParamSpec, current_value: object) -> tuple[str, QtWidgets.QWidget]:
         if spec.access != "rw":
@@ -1282,7 +1392,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._params_state_label.setVisible(bool(params_message))
         self._params_state_label.setText(params_message)
         self._refresh_params_button.setEnabled(has_capabilities and self._controller.is_connected)
-        self._param_table.setEnabled(has_capabilities)
+        self._param_list_scroll.setEnabled(has_capabilities or bool(self._current_param_specs))
 
         self._commands_state_label.setVisible(bool(commands_message))
         self._commands_state_label.setText(commands_message)
@@ -1435,8 +1545,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_param_row_state(param_name)
 
     def _update_param_row_state(self, param_name: str) -> None:
-        row = self._param_row_indexes.get(param_name)
-        if row is None:
+        if param_name not in self._param_row_indexes:
             return
 
         pending = param_name in self._pending_param_values
@@ -1445,71 +1554,64 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._param_visual_states.get(param_name) == state_key:
             return
         self._param_visual_states[param_name] = state_key
-        palette = self._param_table.palette()
+        palette = self._param_list_scroll.palette()
         base_color = palette.base().color()
         text_color = palette.text().color()
+        caption_base_color = self._blend_color(text_color, base_color, 0.42 if base_color.lightness() < 128 else 0.48)
         orange = QtGui.QColor("#f39c12")
-        cream = QtGui.QColor("#ffd7a0")
         blue = QtGui.QColor("#0b84f3")
-        sky = QtGui.QColor("#a8d5ff")
         is_dark = base_color.lightness() < 128
+        field_text_color = self._blend_color(text_color, QtGui.QColor("#f5f7ff"), 0.18 if is_dark else 0.0)
+        name_text_color = self._blend_color(field_text_color, QtGui.QColor("#ffffff"), 0.20 if is_dark else 0.08)
+        caption_color = caption_base_color
 
         if applying:
-            row_color = self._blend_color(base_color, blue, 0.20 if is_dark else 0.10)
-            field_text_color = self._blend_color(text_color, sky if is_dark else blue, 0.28)
+            card_color = self._blend_color(base_color, blue, 0.20 if is_dark else 0.10)
             border_color = self._blend_color(base_color, blue, 0.58 if is_dark else 0.72)
-            editor_style = (
-                f"background-color: {row_color.name()};"
-                f"color: {field_text_color.name()};"
-                f"border: 1px solid {border_color.name()};"
-                "border-radius: 3px;"
-            )
-            button_style = (
-                f"background-color: {row_color.name()};"
-                f"color: {field_text_color.name()};"
-                f"border: 1px solid {border_color.name()};"
-                "border-radius: 4px;"
-                "padding: 2px 8px;"
-            )
         elif pending:
-            row_color = self._blend_color(base_color, orange, 0.22 if is_dark else 0.12)
-            field_text_color = self._blend_color(text_color, cream if is_dark else orange, 0.30)
+            card_color = self._blend_color(base_color, orange, 0.22 if is_dark else 0.12)
             border_color = self._blend_color(base_color, orange, 0.60 if is_dark else 0.75)
-            editor_style = (
-                f"background-color: {row_color.name()};"
-                f"color: {field_text_color.name()};"
-                f"border: 1px solid {border_color.name()};"
-                "border-radius: 3px;"
-            )
-            button_style = (
-                f"background-color: {row_color.name()};"
-                f"color: {field_text_color.name()};"
-                f"border: 1px solid {border_color.name()};"
-                "border-radius: 4px;"
-                "padding: 2px 8px;"
-            )
         else:
-            row_color = base_color
-            field_text_color = text_color
-            editor_style = ""
-            button_style = ""
+            card_color = self._blend_color(base_color, palette.alternateBase().color(), 0.55 if is_dark else 0.35)
+            border_color = self._blend_color(card_color, field_text_color, 0.20 if is_dark else 0.12)
 
-        for column in range(3):
-            item = self._param_table.item(row, column)
-            if item is not None:
-                item.setBackground(row_color)
-                item.setForeground(field_text_color)
+        card = self._param_cards.get(param_name)
+        if card is not None:
+            card.setStyleSheet(
+                "QFrame#paramRecord {"
+                f"background-color: {card_color.name()};"
+                f"border: 1px solid {border_color.name()};"
+                "border-radius: 6px;"
+                "}"
+                "QFrame#paramRecord QLabel {"
+                f"color: {field_text_color.name()};"
+                "border: none;"
+                "background: transparent;"
+                "}"
+                "QFrame#paramRecord QLabel[role='name'] {"
+                f"color: {name_text_color.name()};"
+                "}"
+                "QFrame#paramRecord QLabel[role='caption'] {"
+                f"color: {caption_color.name()};"
+                "}"
+            )
+            if applying:
+                card.setToolTip("Waiting for the board to confirm this change")
+            elif pending:
+                card.setToolTip("Pending local edit")
+            else:
+                card.setToolTip("")
 
         editor_info = self._param_editors.get(param_name)
         if editor_info is not None:
-            editor_info[1].setStyleSheet(editor_style)
+            editor_info[1].setStyleSheet("")
             editor_info[1].setToolTip("Pending local edit" if pending else "")
 
         apply_button = self._param_apply_buttons.get(param_name)
         if apply_button is not None:
             apply_button.setText("Applying..." if applying else "Apply")
             apply_button.setEnabled(pending and self._selected_device is not None and not applying)
-            apply_button.setStyleSheet(button_style)
+            apply_button.setStyleSheet("")
             if applying:
                 apply_button.setToolTip("Waiting for the board to confirm this change")
             elif pending:

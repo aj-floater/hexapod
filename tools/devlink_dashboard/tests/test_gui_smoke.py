@@ -73,6 +73,54 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_plot_export_path_uses_recordings_directory_and_png_name(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window._record_path_edit.setText("/tmp/devlink-recordings")
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+
+        exported_paths: list[str] = []
+
+        def fake_export(path: str) -> bool:
+            exported_paths.append(path)
+            return True
+
+        window._plot_workspace.export_active_pane_image = fake_export  # type: ignore[method-assign]
+        window._export_active_plot()
+
+        self.assertEqual(len(exported_paths), 1)
+        export_path = Path(exported_paths[0])
+        self.assertEqual(export_path.parent, Path("/tmp/devlink-recordings"))
+        self.assertEqual(export_path.suffix, ".png")
+        self.assertRegex(export_path.name, r"^plot-status_led-Main-\d{8}-\d{6}\.png$")
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_record_output_directory_uses_parent_for_jsonl_input(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window._record_path_edit.setText("/tmp/devlink-recordings/session.jsonl")
+
+        self.assertEqual(window._record_output_directory(), Path("/tmp/devlink-recordings"))
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_controller_retries_device_describe_until_ready(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -902,6 +950,65 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_alt_horizontal_wheel_performs_generic_zoom(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+        window.show()
+        app.processEvents()
+
+        capabilities = parse_line(
+            '{"type":"capabilities","version":1,"device":"status_led","commands":[],"streams":['
+            '{"name":"status_led.timing","fields":[{"name":"phase_elapsed_ms","type":"u32","unit":"ms"}]}],'
+            '"params":[]}'
+        )
+        controller.runtime.apply_message(capabilities)
+        window._on_message_received(capabilities)
+
+        window._selected_device = "status_led"
+        workspace = controller.runtime.build_default_workspace("status_led")
+        window._workspace = workspace
+        window._plot_workspace.set_workspace(workspace)
+        pane_widget = window._plot_workspace._pane_widgets["pane-1"]
+
+        for index in range(200):
+            sample = parse_line(
+                f'{{"type":"sample","version":1,"device":"status_led","stream":"status_led.timing","seq":{index},'
+                f'"t_us":{index * 1_000},"data":{{"phase_elapsed_ms":{index}}}}}'
+            )
+            controller.runtime.apply_message(sample)
+            window._plot_workspace.refresh_data(controller.runtime, "status_led")
+        app.processEvents()
+
+        before_x = pane_widget.current_x_range()
+        before_y = pane_widget.current_y_range()
+        self.assertIsNotNone(before_x)
+        self.assertIsNotNone(before_y)
+
+        center = pane_widget.plot_widget.viewport().rect().center()
+        handled = pane_widget._handle_plot_wheel(
+            QtCore.QPoint(120, 0),
+            QtCore.QPointF(center),
+            QtCore.Qt.KeyboardModifier.AltModifier,
+        )
+        app.processEvents()
+
+        after_x = pane_widget.current_x_range()
+        after_y = pane_widget.current_y_range()
+        self.assertTrue(handled)
+        self.assertIsNotNone(after_x)
+        self.assertIsNotNone(after_y)
+        self.assertLess(after_x[1] - after_x[0], before_x[1] - before_x[0])
+        self.assertLess(after_y[1] - after_y[0], before_y[1] - before_y[0])
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_generic_zoom_is_anchored_to_cursor_position(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -969,9 +1076,9 @@ class GuiSmokeTests(unittest.TestCase):
         window._selected_device = "status_led"
         window._refresh_params_table()
 
-        current_item = window._param_table.item(0, 2)
-        self.assertIsNotNone(current_item)
-        self.assertEqual(current_item.text(), "250")
+        current_label = window._param_current_labels.get("blink.period_ms")
+        self.assertIsNotNone(current_label)
+        self.assertEqual(current_label.text(), "250")
 
         response = parse_line(
             '{"type":"resp","version":1,"device":"status_led","id":2,"ok":true,'
@@ -980,9 +1087,9 @@ class GuiSmokeTests(unittest.TestCase):
         controller.runtime.apply_message(response)
         window._on_message_received(response)
 
-        current_item = window._param_table.item(0, 2)
-        self.assertIsNotNone(current_item)
-        self.assertEqual(current_item.text(), "607")
+        current_label = window._param_current_labels.get("blink.period_ms")
+        self.assertIsNotNone(current_label)
+        self.assertEqual(current_label.text(), "607")
         window.close()
 
         if owns_app:
@@ -1045,9 +1152,9 @@ class GuiSmokeTests(unittest.TestCase):
         window._selected_device = "status_led"
         window._refresh_params_table()
 
-        name_item = window._param_table.item(0, 0)
-        self.assertIsNotNone(name_item)
-        self.assertEqual(name_item.toolTip(), "telemetry.timing_sample_ms")
+        name_label = window._param_name_labels.get("telemetry.timing_sample_ms")
+        self.assertIsNotNone(name_label)
+        self.assertEqual(name_label.toolTip(), "telemetry.timing_sample_ms")
         window.close()
 
         if owns_app:
