@@ -18,5 +18,6 @@ typedef struct {
 void adc_input_system_init(void);
 void adc_input_init(AdcInput *adc_input, uint gpio);
 uint16_t adc_input_read_raw(AdcInput *adc_input);
+uint16_t adc_input_read_average_raw(AdcInput *adc_input, uint sample_count);
 
 #endif

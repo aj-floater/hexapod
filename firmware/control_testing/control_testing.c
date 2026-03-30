@@ -19,24 +19,40 @@
 #define COMMAND_IDLE_FLUSH_MS 80u   // how long to wait before flushing a partial line?
 #define ADC_C_GPIO 28u              // adc_c potentiometer input
 #define ADC_SAMPLE_PERIOD_MS 20u    // how often to publish pot samples
+#define ADC_AVERAGE_SAMPLE_COUNT 16u // how many adc samples to average
+#define ADC_LP_ALPHA_DEFAULT_PCT 85u // default low pass alpha
+#define ADC_LP_ALPHA_MIN_PCT 1u     // minimum low pass alpha
+#define ADC_LP_ALPHA_MAX_PCT 100u   // maximum low pass alpha
 #define ADC_C_RAW_MIN 0u            // minimum useful pot reading
 #define ADC_C_RAW_MAX 4080u         // maximum useful pot reading
 #define ADC_C_DEG_0_RAW 3935u       // rough 0 degree calibration point
 #define ADC_C_DEG_180_RAW 285u      // rough 180 degree calibration point
 #define ADC_C_MIN_DEG 0u            // minimum reported angle
 #define ADC_C_MAX_DEG 180u          // maximum reported angle
+#define ANGLE_SOURCE_AVG 0u         // angle uses averaged adc
+#define ANGLE_SOURCE_LP 1u          // angle uses low pass adc
+#define ANGLE_SOURCE_BOTH 2u        // angle uses both averaged and low pass adc
 
 // Parameter Ids
 enum {
     PARAM_STATUS_LED_ON = 0,
+    PARAM_FILTER_ALPHA_PCT,
+    PARAM_ANGLE_SOURCE_MODE,
 };
 
 // App State
 typedef struct {
     bool status_led_on;
     AdcInput adc_c;
+    bool adc_lp_ready;
+    uint8_t adc_lp_alpha_pct;
+    uint8_t angle_source_mode;
+    uint16_t adc_lp_raw;
     uint32_t adc_raw_sample_seq;
-    uint32_t adc_angle_sample_seq;
+    uint32_t adc_avg_sample_seq;
+    uint32_t adc_lp_sample_seq;
+    uint32_t adc_angle_avg_sample_seq;
+    uint32_t adc_angle_lp_sample_seq;
     absolute_time_t next_adc_sample_at;
 } ControlTestingApp;
 
@@ -59,13 +75,28 @@ static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_fields[] =
     {"adc_c_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
 };
 
-static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_fields[] = {
-    {"adc_c_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_avg_fields[] = {
+    {"adc_c_avg_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+};
+
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_lp_fields[] = {
+    {"adc_c_lp_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+};
+
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_avg_fields[] = {
+    {"adc_c_avg_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
+};
+
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_lp_fields[] = {
+    {"adc_c_lp_deg", DEVLINK_SERIAL_TYPE_U16, "deg"},
 };
 
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
-    {"control_testing.angle", g_control_testing_angle_fields, count_of(g_control_testing_angle_fields)},
+    {"control_testing.adc_avg", g_control_testing_adc_avg_fields, count_of(g_control_testing_adc_avg_fields)},
+    {"control_testing.adc_lp", g_control_testing_adc_lp_fields, count_of(g_control_testing_adc_lp_fields)},
+    {"control_testing.angle_avg", g_control_testing_angle_avg_fields, count_of(g_control_testing_angle_avg_fields)},
+    {"control_testing.angle_lp", g_control_testing_angle_lp_fields, count_of(g_control_testing_angle_lp_fields)},
 };
 
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
@@ -79,11 +110,31 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
         DEVLINK_SERIAL_VALUE_BOOL(true),
         PARAM_STATUS_LED_ON,
     },
+    {
+        "filter.alpha_pct",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_DEFAULT_PCT),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_MIN_PCT),
+        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_MAX_PCT),
+        PARAM_FILTER_ALPHA_PCT,
+    },
+    {
+        "angle.source_mode",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_BOTH),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_AVG),
+        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_BOTH),
+        PARAM_ANGLE_SOURCE_MODE,
+    },
 };
 
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.2.0",
+    .firmware = "0.3.0",
     .commands = NULL,
     .command_count = 0u,
     .streams = g_control_testing_streams,
@@ -116,8 +167,15 @@ static void control_testing_init(ControlTestingApp *app) {
     adc_input_init(&app->adc_c, ADC_C_GPIO);
 
     app->status_led_on = false;
+    app->adc_lp_ready = false;
+    app->adc_lp_alpha_pct = ADC_LP_ALPHA_DEFAULT_PCT;
+    app->angle_source_mode = ANGLE_SOURCE_BOTH;
+    app->adc_lp_raw = 0u;
     app->adc_raw_sample_seq = 0u;
-    app->adc_angle_sample_seq = 0u;
+    app->adc_avg_sample_seq = 0u;
+    app->adc_lp_sample_seq = 0u;
+    app->adc_angle_avg_sample_seq = 0u;
+    app->adc_angle_lp_sample_seq = 0u;
     app->next_adc_sample_at = now;
 
     control_testing_apply_status_led(app);
@@ -153,6 +211,39 @@ static uint16_t control_testing_adc_raw_to_deg(uint16_t raw_value) {
     return (uint16_t)((numerator + (denominator / 2u)) / denominator);
 }
 
+// Filter Helpers
+// updates the low pass value using the averaged adc reading
+static uint16_t control_testing_update_adc_lp(ControlTestingApp *app, uint16_t avg_raw_value) {
+    uint32_t filtered_raw = 0u;
+    uint32_t previous_weight = 0u;
+
+    hard_assert(app != NULL);
+
+    if (!app->adc_lp_ready) {
+        app->adc_lp_raw = avg_raw_value;
+        app->adc_lp_ready = true;
+        return app->adc_lp_raw;
+    }
+
+    previous_weight = (uint32_t)(ADC_LP_ALPHA_MAX_PCT - app->adc_lp_alpha_pct);
+    filtered_raw = ((uint32_t)app->adc_lp_alpha_pct * avg_raw_value)
+        + (previous_weight * app->adc_lp_raw);
+    app->adc_lp_raw = (uint16_t)((filtered_raw + 50u) / 100u);
+    app->adc_lp_raw = control_testing_bound_adc_raw(app->adc_lp_raw);
+    return app->adc_lp_raw;
+}
+
+// tells the firmware which angle stream or streams should be sent
+static bool control_testing_should_emit_angle_avg(const ControlTestingApp *app) {
+    hard_assert(app != NULL);
+    return app->angle_source_mode == ANGLE_SOURCE_AVG || app->angle_source_mode == ANGLE_SOURCE_BOTH;
+}
+
+static bool control_testing_should_emit_angle_lp(const ControlTestingApp *app) {
+    hard_assert(app != NULL);
+    return app->angle_source_mode == ANGLE_SOURCE_LP || app->angle_source_mode == ANGLE_SOURCE_BOTH;
+}
+
 // Devlink Parameter Callbacks
 // returns the current value of status_led.on
 static bool control_testing_param_get(
@@ -167,6 +258,14 @@ static bool control_testing_param_get(
     hard_assert(out_value != NULL);
 
     if ((int)param->user_data != PARAM_STATUS_LED_ON) {
+        if ((int)param->user_data == PARAM_FILTER_ALPHA_PCT) {
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->adc_lp_alpha_pct);
+            return true;
+        }
+        if ((int)param->user_data == PARAM_ANGLE_SOURCE_MODE) {
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->angle_source_mode);
+            return true;
+        }
         return false;
     }
 
@@ -193,6 +292,14 @@ static bool control_testing_param_set(
     *out_error_message = NULL;
 
     if ((int)param->user_data != PARAM_STATUS_LED_ON) {
+        if ((int)param->user_data == PARAM_FILTER_ALPHA_PCT) {
+            app->adc_lp_alpha_pct = (uint8_t)value.u32_value;
+            return true;
+        }
+        if ((int)param->user_data == PARAM_ANGLE_SOURCE_MODE) {
+            app->angle_source_mode = (uint8_t)value.u32_value;
+            return true;
+        }
         *out_error_code = "unknown_param";
         *out_error_message = "unknown parameter";
         return false;
@@ -207,15 +314,26 @@ static bool control_testing_param_set(
 // sends periodic adc samples so devlink can plot the pot value
 static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     uint16_t raw_value = 0u;
-    uint16_t angle_deg = 0u;
+    uint16_t avg_raw_value = 0u;
+    uint16_t lp_raw_value = 0u;
+    uint16_t angle_avg_deg = 0u;
+    uint16_t angle_lp_deg = 0u;
     uint64_t sample_time_us = 0u;
     DevlinkSerialValue values[count_of(g_control_testing_adc_fields)];
-    DevlinkSerialValue angle_values[count_of(g_control_testing_angle_fields)];
+    DevlinkSerialValue avg_values[count_of(g_control_testing_adc_avg_fields)];
+    DevlinkSerialValue lp_values[count_of(g_control_testing_adc_lp_fields)];
+    DevlinkSerialValue angle_avg_values[count_of(g_control_testing_angle_avg_fields)];
+    DevlinkSerialValue angle_lp_values[count_of(g_control_testing_angle_lp_fields)];
 
     hard_assert(app != NULL);
 
     raw_value = control_testing_bound_adc_raw(adc_input_read_raw(&app->adc_c));
-    angle_deg = control_testing_adc_raw_to_deg(raw_value);
+    avg_raw_value = control_testing_bound_adc_raw(
+        adc_input_read_average_raw(&app->adc_c, ADC_AVERAGE_SAMPLE_COUNT)
+    );
+    lp_raw_value = control_testing_update_adc_lp(app, avg_raw_value);
+    angle_avg_deg = control_testing_adc_raw_to_deg(avg_raw_value);
+    angle_lp_deg = control_testing_adc_raw_to_deg(lp_raw_value);
     sample_time_us = time_us_64();
 
     values[0] = DEVLINK_SERIAL_VALUE_U16(raw_value);
@@ -227,14 +345,45 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
         values
     );
 
-    angle_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_deg);
+    avg_values[0] = DEVLINK_SERIAL_VALUE_U16(avg_raw_value);
     devlink_serial_print_sample(
         &g_control_testing_device,
         &g_control_testing_streams[1],
-        app->adc_angle_sample_seq++,
+        app->adc_avg_sample_seq++,
         sample_time_us,
-        angle_values
+        avg_values
     );
+
+    lp_values[0] = DEVLINK_SERIAL_VALUE_U16(lp_raw_value);
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[2],
+        app->adc_lp_sample_seq++,
+        sample_time_us,
+        lp_values
+    );
+
+    if (control_testing_should_emit_angle_avg(app)) {
+        angle_avg_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_avg_deg);
+        devlink_serial_print_sample(
+            &g_control_testing_device,
+            &g_control_testing_streams[3],
+            app->adc_angle_avg_sample_seq++,
+            sample_time_us,
+            angle_avg_values
+        );
+    }
+
+    if (control_testing_should_emit_angle_lp(app)) {
+        angle_lp_values[0] = DEVLINK_SERIAL_VALUE_U16(angle_lp_deg);
+        devlink_serial_print_sample(
+            &g_control_testing_device,
+            &g_control_testing_streams[4],
+            app->adc_angle_lp_sample_seq++,
+            sample_time_us,
+            angle_lp_values
+        );
+    }
 }
 
 static void control_testing_tick(ControlTestingApp *app) {
