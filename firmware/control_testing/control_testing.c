@@ -6,6 +6,7 @@
 
 #include "adc_input.h"
 #include "devlink_serial.h"
+#include "motor_pwm.h"
 #include "pio_uart_rx.h"
 
 #ifndef PICO_DEFAULT_LED_PIN
@@ -18,7 +19,7 @@
 #define COMMAND_BUFFER_LEN 256u     // max line length for a single JSON command
 #define COMMAND_IDLE_FLUSH_MS 80u   // how long to wait before flushing a partial line?
 #define ADC_C_GPIO 28u              // adc_c potentiometer input
-#define ADC_SAMPLE_PERIOD_MS 20u    // how often to publish pot samples
+#define ADC_SAMPLE_PERIOD_MS 100u   // slower telemetry keeps devlink responsive at 115200 baud
 #define ADC_AVERAGE_SAMPLE_COUNT 16u // how many adc samples to average
 #define ADC_LP_ALPHA_DEFAULT_PCT 85u // default low pass alpha
 #define ADC_LP_ALPHA_MIN_PCT 1u     // minimum low pass alpha
@@ -28,30 +29,43 @@
 #define ADC_C_MIN_DEG 0u            // minimum reported angle
 #define ADC_C_MAX_DEG 180u          // maximum reported angle
 #define ADC_C_TENTHS_PER_DEG 10u    // one decimal place for reported angle
+#define MOTOR_C_IN1_GPIO 22u        // motor_c driver input 1
+#define MOTOR_C_IN2_GPIO 23u        // motor_c driver input 2
+#define MOTOR_PWM_HZ 20000u         // motor pwm frequency
 #define ANGLE_SOURCE_AVG 0u         // angle uses averaged adc
 #define ANGLE_SOURCE_LP 1u          // angle uses low pass adc
 #define ANGLE_SOURCE_BOTH 2u        // angle uses both averaged and low pass adc
+#define MOTOR_STATE_COAST 0u        // motor output is released
+#define MOTOR_STATE_BRAKE 1u        // motor output actively brakes
+#define MOTOR_STATE_FORWARD 2u      // motor drives forward
+#define MOTOR_STATE_REVERSE 3u      // motor drives reverse
 
 // Parameter Ids
 enum {
     PARAM_STATUS_LED_ON = 0,
     PARAM_FILTER_ALPHA_PCT,
     PARAM_ANGLE_SOURCE_MODE,
+    PARAM_MOTOR_STATE,
+    PARAM_MOTOR_DRIVE_PCT,
 };
 
 // App State
 typedef struct {
     bool status_led_on;
     AdcInput adc_c;
+    MotorPwm motor_c;
     bool adc_lp_ready;
     uint8_t adc_lp_alpha_pct;
     uint8_t angle_source_mode;
+    uint8_t motor_state;
+    uint8_t motor_drive_pct;
     uint16_t adc_lp_raw;
     uint32_t adc_raw_sample_seq;
     uint32_t adc_avg_sample_seq;
     uint32_t adc_lp_sample_seq;
     uint32_t adc_angle_avg_sample_seq;
     uint32_t adc_angle_lp_sample_seq;
+    uint32_t motor_sample_seq;
     absolute_time_t next_adc_sample_at;
 } ControlTestingApp;
 
@@ -95,14 +109,22 @@ static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_lp_field
     {"adc_c_lp_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
 };
 
+// Motor Stream
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_motor_fields[] = {
+    {"motor_state", DEVLINK_SERIAL_TYPE_U8, "state"},
+    {"motor_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
+};
+
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
     {"control_testing.adc_avg", g_control_testing_adc_avg_fields, count_of(g_control_testing_adc_avg_fields)},
     {"control_testing.adc_lp", g_control_testing_adc_lp_fields, count_of(g_control_testing_adc_lp_fields)},
     {"control_testing.angle_avg", g_control_testing_angle_avg_fields, count_of(g_control_testing_angle_avg_fields)},
     {"control_testing.angle_lp", g_control_testing_angle_lp_fields, count_of(g_control_testing_angle_lp_fields)},
+    {"control_testing.motor", g_control_testing_motor_fields, count_of(g_control_testing_motor_fields)},
 };
 
+// Control Params
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     {
         "status_led.on",
@@ -134,6 +156,26 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
         DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_BOTH),
         PARAM_ANGLE_SOURCE_MODE,
     },
+    {
+        "motor.state",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_COAST),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_COAST),
+        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_REVERSE),
+        PARAM_MOTOR_STATE,
+    },
+    {
+        "motor.drive_pct",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(0u),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(0u),
+        DEVLINK_SERIAL_VALUE_U8(100u),
+        PARAM_MOTOR_DRIVE_PCT,
+    },
 };
 
 static const ControlTestingCalibrationPoint g_control_testing_calibration_points[] = {
@@ -160,7 +202,7 @@ static const ControlTestingCalibrationPoint g_control_testing_calibration_points
 
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.4.0",
+    .firmware = "0.5.0",
     .commands = NULL,
     .command_count = 0u,
     .streams = g_control_testing_streams,
@@ -178,9 +220,31 @@ static void control_testing_apply_status_led(const ControlTestingApp *app) {
     gpio_put(PICO_DEFAULT_LED_PIN, app->status_led_on);
 }
 
+// Motor Helpers
+// writes current app state to the motor driver
+static void control_testing_apply_motor_output(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    switch (app->motor_state) {
+        case MOTOR_STATE_BRAKE:
+            motor_pwm_brake(&app->motor_c);
+            break;
+        case MOTOR_STATE_FORWARD:
+            motor_pwm_set_forward_duty(&app->motor_c, app->motor_drive_pct);
+            break;
+        case MOTOR_STATE_REVERSE:
+            motor_pwm_set_reverse_duty(&app->motor_c, app->motor_drive_pct);
+            break;
+        case MOTOR_STATE_COAST:
+        default:
+            motor_pwm_coast(&app->motor_c);
+            break;
+    }
+}
+
 // ADC Helpers
 // sets up the LED GPIO as output
-// also sets up adc_c and sample timing
+// also sets up adc_c, motor_c, and sample timing
 static void control_testing_init(ControlTestingApp *app) {
     absolute_time_t now = get_absolute_time();
 
@@ -191,20 +255,25 @@ static void control_testing_init(ControlTestingApp *app) {
 
     adc_input_system_init();
     adc_input_init(&app->adc_c, ADC_C_GPIO);
+    motor_pwm_init(&app->motor_c, "motor_c", MOTOR_C_IN1_GPIO, MOTOR_C_IN2_GPIO, MOTOR_PWM_HZ);
 
     app->status_led_on = false;
     app->adc_lp_ready = false;
     app->adc_lp_alpha_pct = ADC_LP_ALPHA_DEFAULT_PCT;
     app->angle_source_mode = ANGLE_SOURCE_BOTH;
+    app->motor_state = MOTOR_STATE_COAST;
+    app->motor_drive_pct = 0u;
     app->adc_lp_raw = 0u;
     app->adc_raw_sample_seq = 0u;
     app->adc_avg_sample_seq = 0u;
     app->adc_lp_sample_seq = 0u;
     app->adc_angle_avg_sample_seq = 0u;
     app->adc_angle_lp_sample_seq = 0u;
+    app->motor_sample_seq = 0u;
     app->next_adc_sample_at = now;
 
     control_testing_apply_status_led(app);
+    control_testing_apply_motor_output(app);
 }
 
 // Calibration Helpers
@@ -297,6 +366,7 @@ static bool control_testing_should_emit_angle_lp(const ControlTestingApp *app) {
 
 // Devlink Parameter Callbacks
 // returns the current value of status_led.on
+// also returns filter, angle, and motor control params
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -308,23 +378,29 @@ static bool control_testing_param_get(
     hard_assert(param != NULL);
     hard_assert(out_value != NULL);
 
-    if ((int)param->user_data != PARAM_STATUS_LED_ON) {
-        if ((int)param->user_data == PARAM_FILTER_ALPHA_PCT) {
+    switch ((int)param->user_data) {
+        case PARAM_STATUS_LED_ON:
+            *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
+            return true;
+        case PARAM_FILTER_ALPHA_PCT:
             *out_value = DEVLINK_SERIAL_VALUE_U8(app->adc_lp_alpha_pct);
             return true;
-        }
-        if ((int)param->user_data == PARAM_ANGLE_SOURCE_MODE) {
+        case PARAM_ANGLE_SOURCE_MODE:
             *out_value = DEVLINK_SERIAL_VALUE_U8(app->angle_source_mode);
             return true;
-        }
-        return false;
+        case PARAM_MOTOR_STATE:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->motor_state);
+            return true;
+        case PARAM_MOTOR_DRIVE_PCT:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->motor_drive_pct);
+            return true;
+        default:
+            return false;
     }
-
-    *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
-    return true;
 }
 
 // accepts a new value, stores it in the app state and updates LED
+// also updates filter, angle, and motor control params
 static bool control_testing_param_set(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -342,27 +418,35 @@ static bool control_testing_param_set(
     *out_error_code = NULL;
     *out_error_message = NULL;
 
-    if ((int)param->user_data != PARAM_STATUS_LED_ON) {
-        if ((int)param->user_data == PARAM_FILTER_ALPHA_PCT) {
+    switch ((int)param->user_data) {
+        case PARAM_STATUS_LED_ON:
+            app->status_led_on = value.bool_value;
+            control_testing_apply_status_led(app);
+            return true;
+        case PARAM_FILTER_ALPHA_PCT:
             app->adc_lp_alpha_pct = (uint8_t)value.u32_value;
             return true;
-        }
-        if ((int)param->user_data == PARAM_ANGLE_SOURCE_MODE) {
+        case PARAM_ANGLE_SOURCE_MODE:
             app->angle_source_mode = (uint8_t)value.u32_value;
             return true;
-        }
-        *out_error_code = "unknown_param";
-        *out_error_message = "unknown parameter";
-        return false;
+        case PARAM_MOTOR_STATE:
+            app->motor_state = (uint8_t)value.u32_value;
+            control_testing_apply_motor_output(app);
+            return true;
+        case PARAM_MOTOR_DRIVE_PCT:
+            app->motor_drive_pct = (uint8_t)value.u32_value;
+            control_testing_apply_motor_output(app);
+            return true;
+        default:
+            *out_error_code = "unknown_param";
+            *out_error_message = "unknown parameter";
+            return false;
     }
-
-    app->status_led_on = value.bool_value;
-    control_testing_apply_status_led(app);
-    return true;
 }
 
 // Devlink Samples
 // sends periodic adc samples so devlink can plot the pot value
+// also sends the commanded motor state and duty
 static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     uint16_t raw_value = 0u;
     uint16_t avg_raw_value = 0u;
@@ -375,6 +459,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     DevlinkSerialValue lp_values[count_of(g_control_testing_adc_lp_fields)];
     DevlinkSerialValue angle_avg_values[count_of(g_control_testing_angle_avg_fields)];
     DevlinkSerialValue angle_lp_values[count_of(g_control_testing_angle_lp_fields)];
+    DevlinkSerialValue motor_values[count_of(g_control_testing_motor_fields)];
 
     hard_assert(app != NULL);
 
@@ -439,6 +524,16 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
             angle_lp_values
         );
     }
+
+    motor_values[0] = DEVLINK_SERIAL_VALUE_U8(app->motor_state);
+    motor_values[1] = DEVLINK_SERIAL_VALUE_U8(app->motor_drive_pct);
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[5],
+        app->motor_sample_seq++,
+        sample_time_us,
+        motor_values
+    );
 }
 
 static void control_testing_tick(ControlTestingApp *app) {
@@ -511,7 +606,7 @@ int main(void) {
     sleep_ms(200u);
 
     // init the LED
-    // also init adc_c and sample timing
+    // also init adc_c, motor_c, and sample timing
     control_testing_init(&app);
 
     // start the PIO UART receiver
