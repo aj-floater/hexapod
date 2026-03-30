@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
+from pyqtgraph.exporters import ImageExporter
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .workspace import DEFAULT_X_GROUP, PlotPane, PlotTrace, PlotWorkspace, default_trace_color
@@ -19,6 +20,8 @@ FOLLOW_RIGHT_PADDING_FRACTION = 0.02
 MAX_FOLLOW_SPAN_US = 10_000_000.0
 WHEEL_ZOOM_BASE = 0.85
 MIN_Y_SPAN = 1e-6
+MIN_EXPORT_WIDTH_PX = 2400
+EXPORT_SCALE_FACTOR = 3
 
 
 @dataclass
@@ -538,13 +541,17 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         preserved_y_range = self.current_y_range()
 
         if modifiers & QtCore.Qt.KeyboardModifier.AltModifier:
-            vertical_steps = angle_delta.y() / 120.0
-            if vertical_steps:
+            dominant_delta = angle_delta.y()
+            if abs(angle_delta.x()) > abs(dominant_delta):
+                dominant_delta = angle_delta.x()
+            generic_steps = dominant_delta / 120.0
+            if generic_steps:
                 return self._handle_plot_generic_zoom(
-                    WHEEL_ZOOM_BASE ** vertical_steps,
+                    WHEEL_ZOOM_BASE ** generic_steps,
                     position,
                     source_widget,
                 )
+            return False
 
         horizontal_steps = angle_delta.x() / 120.0
         if horizontal_steps:
@@ -729,6 +736,27 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 active_pane_id=remaining[0].id,
             )
         )
+
+    def export_active_pane_image(self, path: str) -> bool:
+        active_id = self.active_pane_id
+        if active_id is None:
+            return False
+        widget = self._pane_widgets.get(active_id)
+        if widget is None:
+            return False
+
+        plot_item = widget.plot_widget.plotItem
+        exporter = ImageExporter(plot_item)
+        width = max(
+            MIN_EXPORT_WIDTH_PX,
+            int(max(1, widget.plot_widget.viewport().width()) * EXPORT_SCALE_FACTOR),
+        )
+        try:
+            exporter.parameters()["width"] = width
+        except Exception:
+            pass
+        exporter.export(path)
+        return True
 
     def move_active_pane(self, direction: int) -> None:
         active = self._active_pane()
