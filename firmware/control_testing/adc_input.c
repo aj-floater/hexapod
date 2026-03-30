@@ -25,3 +25,17 @@ uint16_t adc_input_read_raw(AdcInput *adc_input) {
     adc_select_input(adc_input->input);
     return adc_read();
 }
+
+// Average Reads
+uint16_t adc_input_read_average_raw(AdcInput *adc_input, uint sample_count) {
+    uint32_t sum = 0u;
+
+    hard_assert(adc_input != NULL);
+    hard_assert(sample_count > 0u);
+
+    for (uint sample_index = 0u; sample_index < sample_count; sample_index++) {
+        sum += adc_input_read_raw(adc_input);
+    }
+
+    return (uint16_t)((sum + (sample_count / 2u)) / sample_count);
+}
