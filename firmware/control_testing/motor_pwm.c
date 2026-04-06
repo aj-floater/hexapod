@@ -98,13 +98,13 @@ void motor_pwm_brake(MotorPwm *motor) {
 void motor_pwm_set_forward_duty(MotorPwm *motor, uint8_t duty_percent) {
     hard_assert(motor != NULL);
 
-    pwm_set_gpio_level(motor->in1_gpio, motor_pwm_duty_to_level(motor, duty_percent));
-    pwm_set_gpio_level(motor->in2_gpio, 0u);
+    pwm_set_gpio_level(motor->in1_gpio, 0u);
+    pwm_set_gpio_level(motor->in2_gpio, motor_pwm_duty_to_level(motor, duty_percent));
 }
 
 void motor_pwm_set_reverse_duty(MotorPwm *motor, uint8_t duty_percent) {
     hard_assert(motor != NULL);
 
-    pwm_set_gpio_level(motor->in1_gpio, 0u);
-    pwm_set_gpio_level(motor->in2_gpio, motor_pwm_duty_to_level(motor, duty_percent));
+    pwm_set_gpio_level(motor->in1_gpio, motor_pwm_duty_to_level(motor, duty_percent));
+    pwm_set_gpio_level(motor->in2_gpio, 0u);
 }

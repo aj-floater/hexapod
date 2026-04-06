@@ -8,6 +8,7 @@
 #include "devlink_serial.h"
 #include "motor_pwm.h"
 #include "pio_uart_rx.h"
+#include "position_hold.h"
 
 #ifndef PICO_DEFAULT_LED_PIN
 #error "control_testing requires PICO_DEFAULT_LED_PIN"
@@ -40,6 +41,7 @@
 #define MOTOR_STATE_FORWARD 2u      // motor drives forward
 #define MOTOR_STATE_REVERSE 3u      // motor drives reverse
 
+
 // Parameter Ids
 enum {
     PARAM_STATUS_LED_ON = 0,
@@ -47,6 +49,11 @@ enum {
     PARAM_ANGLE_SOURCE_MODE,
     PARAM_MOTOR_STATE,
     PARAM_MOTOR_DRIVE_PCT,
+    PARAM_CONTROL_MODE,
+    PARAM_HOLD_TARGET_DEG_TENTHS,
+    PARAM_HOLD_DEADBAND_DEG_TENTHS,
+    PARAM_HOLD_P_GAIN,
+    PARAM_HOLD_MAX_DUTY,
 };
 
 // App State
@@ -59,6 +66,12 @@ typedef struct {
     uint8_t angle_source_mode;
     uint8_t motor_state;
     uint8_t motor_drive_pct;
+    uint8_t control_mode;
+    uint16_t hold_target_deg_tenths;
+    uint16_t hold_deadband_deg_tenths;
+    uint8_t hold_p_gain;
+    uint8_t hold_max_duty;
+    int16_t hold_output_pct;
     uint16_t adc_lp_raw;
     uint32_t adc_raw_sample_seq;
     uint32_t adc_avg_sample_seq;
@@ -66,6 +79,7 @@ typedef struct {
     uint32_t adc_angle_avg_sample_seq;
     uint32_t adc_angle_lp_sample_seq;
     uint32_t motor_sample_seq;
+    uint32_t hold_sample_seq;
     absolute_time_t next_adc_sample_at;
 } ControlTestingApp;
 
@@ -74,8 +88,9 @@ typedef struct {
     uint16_t raw;
 } ControlTestingCalibrationPoint;
 
-// Device Description
-// tells the devlink library what this device supports
+// Devlink Forward Declarations
+// devlink calls these two functions when the host reads or writes a parameter.
+// they are defined further down but declared here so the device descriptor can reference them.
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -89,6 +104,11 @@ static bool control_testing_param_set(
     const char **out_error_message
 );
 
+// Devlink Stream Definitions
+// each stream is a named channel of time-series data sent to the host for plotting.
+// a stream has one or more fields, each with a name, type, and unit.
+// for example the "adc" stream sends one U16 value called "adc_c_raw" with unit "adc".
+// the host uses these definitions to label axes and group plots automatically.
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_fields[] = {
     {"adc_c_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
 };
@@ -115,6 +135,17 @@ static const DevlinkSerialStreamFieldDescriptor g_control_testing_motor_fields[]
     {"motor_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
 };
 
+// Position Hold Stream
+static const DevlinkSerialStreamFieldDescriptor g_control_testing_hold_fields[] = {
+    {"hold_target_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_actual_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_error_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
+};
+
+// Devlink Stream Registry
+// this array registers all streams with the device. the host discovers these at startup
+// and creates a plot for each one. order matters — streams are referenced by index elsewhere.
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
     {"control_testing.adc_avg", g_control_testing_adc_avg_fields, count_of(g_control_testing_adc_avg_fields)},
@@ -122,9 +153,13 @@ static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.angle_avg", g_control_testing_angle_avg_fields, count_of(g_control_testing_angle_avg_fields)},
     {"control_testing.angle_lp", g_control_testing_angle_lp_fields, count_of(g_control_testing_angle_lp_fields)},
     {"control_testing.motor", g_control_testing_motor_fields, count_of(g_control_testing_motor_fields)},
+    {"control_testing.hold", g_control_testing_hold_fields, count_of(g_control_testing_hold_fields)},
 };
 
-// Control Params
+// Devlink Parameter Definitions
+// each param is a named value the host can read and write, shown as a slider or toggle in the UI.
+// fields: name, type, access (RO or RW), default, has_bounds, min, max, user_data (our enum ID).
+// devlink enforces min/max bounds before calling our setter, so we don't need to range-check.
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     {
         "status_led.on",
@@ -176,6 +211,56 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
         DEVLINK_SERIAL_VALUE_U8(100u),
         PARAM_MOTOR_DRIVE_PCT,
     },
+    {
+        "control.mode",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL),
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD),
+        PARAM_CONTROL_MODE,
+    },
+    {
+        "hold.target_deg_tenths",
+        DEVLINK_SERIAL_TYPE_U16,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_MIN),
+        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_MAX),
+        PARAM_HOLD_TARGET_DEG_TENTHS,
+    },
+    {
+        "hold.deadband_deg_tenths",
+        DEVLINK_SERIAL_TYPE_U16,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_MIN),
+        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_MAX),
+        PARAM_HOLD_DEADBAND_DEG_TENTHS,
+    },
+    {
+        "hold.p_gain",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_MIN),
+        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_MAX),
+        PARAM_HOLD_P_GAIN,
+    },
+    {
+        "hold.max_duty",
+        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_U8(HOLD_MAX_DUTY_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_U8(0u),
+        DEVLINK_SERIAL_VALUE_U8(100u),
+        PARAM_HOLD_MAX_DUTY,
+    },
 };
 
 static const ControlTestingCalibrationPoint g_control_testing_calibration_points[] = {
@@ -200,9 +285,13 @@ static const ControlTestingCalibrationPoint g_control_testing_calibration_points
     {180u, 285u},
 };
 
+// Devlink Device Descriptor
+// this is the top-level object that ties everything together: device name, firmware version,
+// the list of streams and params, and the getter/setter callbacks. devlink sends this to
+// the host at startup so it knows the full capabilities of this device.
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.5.0",
+    .firmware = "0.6.0",
     .commands = NULL,
     .command_count = 0u,
     .streams = g_control_testing_streams,
@@ -263,6 +352,12 @@ static void control_testing_init(ControlTestingApp *app) {
     app->angle_source_mode = ANGLE_SOURCE_BOTH;
     app->motor_state = MOTOR_STATE_COAST;
     app->motor_drive_pct = 0u;
+    app->control_mode = CONTROL_MODE_MANUAL;
+    app->hold_target_deg_tenths = HOLD_TARGET_DEFAULT;
+    app->hold_deadband_deg_tenths = HOLD_DEADBAND_DEFAULT;
+    app->hold_p_gain = HOLD_P_GAIN_DEFAULT;
+    app->hold_max_duty = HOLD_MAX_DUTY_DEFAULT;
+    app->hold_output_pct = 0;
     app->adc_lp_raw = 0u;
     app->adc_raw_sample_seq = 0u;
     app->adc_avg_sample_seq = 0u;
@@ -270,6 +365,7 @@ static void control_testing_init(ControlTestingApp *app) {
     app->adc_angle_avg_sample_seq = 0u;
     app->adc_angle_lp_sample_seq = 0u;
     app->motor_sample_seq = 0u;
+    app->hold_sample_seq = 0u;
     app->next_adc_sample_at = now;
 
     control_testing_apply_status_led(app);
@@ -364,9 +460,9 @@ static bool control_testing_should_emit_angle_lp(const ControlTestingApp *app) {
     return app->angle_source_mode == ANGLE_SOURCE_LP || app->angle_source_mode == ANGLE_SOURCE_BOTH;
 }
 
-// Devlink Parameter Callbacks
-// returns the current value of status_led.on
-// also returns filter, angle, and motor control params
+// Devlink Parameter Getter
+// called by devlink when the host reads a parameter.
+// we look up which param it is using the user_data enum ID, then return the current app value.
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -394,13 +490,29 @@ static bool control_testing_param_get(
         case PARAM_MOTOR_DRIVE_PCT:
             *out_value = DEVLINK_SERIAL_VALUE_U8(app->motor_drive_pct);
             return true;
+        case PARAM_CONTROL_MODE:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->control_mode);
+            return true;
+        case PARAM_HOLD_TARGET_DEG_TENTHS:
+            *out_value = DEVLINK_SERIAL_VALUE_U16(app->hold_target_deg_tenths);
+            return true;
+        case PARAM_HOLD_DEADBAND_DEG_TENTHS:
+            *out_value = DEVLINK_SERIAL_VALUE_U16(app->hold_deadband_deg_tenths);
+            return true;
+        case PARAM_HOLD_P_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->hold_p_gain);
+            return true;
+        case PARAM_HOLD_MAX_DUTY:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(app->hold_max_duty);
+            return true;
         default:
             return false;
     }
 }
 
-// accepts a new value, stores it in the app state and updates LED
-// also updates filter, angle, and motor control params
+// Devlink Parameter Setter
+// called by devlink when the host writes a parameter.
+// we store the new value in app state, then apply any side effects (e.g. updating motor output).
 static bool control_testing_param_set(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -437,6 +549,27 @@ static bool control_testing_param_set(
             app->motor_drive_pct = (uint8_t)value.u32_value;
             control_testing_apply_motor_output(app);
             return true;
+        case PARAM_CONTROL_MODE:
+            app->control_mode = (uint8_t)value.u32_value;
+            if (app->control_mode == CONTROL_MODE_MANUAL) {
+                app->motor_state = MOTOR_STATE_COAST;
+                app->motor_drive_pct = 0u;
+                app->hold_output_pct = 0;
+                control_testing_apply_motor_output(app);
+            }
+            return true;
+        case PARAM_HOLD_TARGET_DEG_TENTHS:
+            app->hold_target_deg_tenths = (uint16_t)value.u32_value;
+            return true;
+        case PARAM_HOLD_DEADBAND_DEG_TENTHS:
+            app->hold_deadband_deg_tenths = (uint16_t)value.u32_value;
+            return true;
+        case PARAM_HOLD_P_GAIN:
+            app->hold_p_gain = (uint8_t)value.u32_value;
+            return true;
+        case PARAM_HOLD_MAX_DUTY:
+            app->hold_max_duty = (uint8_t)value.u32_value;
+            return true;
         default:
             *out_error_code = "unknown_param";
             *out_error_message = "unknown parameter";
@@ -444,9 +577,10 @@ static bool control_testing_param_set(
     }
 }
 
-// Devlink Samples
-// sends periodic adc samples so devlink can plot the pot value
-// also sends the commanded motor state and duty
+// Devlink Sample Emission
+// called every 100ms by the tick function. reads sensors, runs the controller,
+// then sends each stream's current values to the host as a timestamped sample.
+// devlink_serial_print_sample serializes the values as JSON over UART.
 static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     uint16_t raw_value = 0u;
     uint16_t avg_raw_value = 0u;
@@ -470,6 +604,21 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     lp_raw_value = control_testing_update_adc_lp(app, avg_raw_value);
     angle_avg_deg_tenths = control_testing_adc_raw_to_deg_tenths(avg_raw_value);
     angle_lp_deg_tenths = control_testing_adc_raw_to_deg_tenths(lp_raw_value);
+
+    if (app->control_mode == CONTROL_MODE_HOLD) {
+        PositionHoldResult hold_result = position_hold_update(
+            app->hold_target_deg_tenths,
+            angle_lp_deg_tenths,
+            app->hold_deadband_deg_tenths,
+            app->hold_p_gain,
+            app->hold_max_duty
+        );
+        app->motor_state = hold_result.motor_state;
+        app->motor_drive_pct = hold_result.motor_drive_pct;
+        app->hold_output_pct = hold_result.output_pct;
+        control_testing_apply_motor_output(app);
+    }
+
     sample_time_us = time_us_64();
 
     values[0] = DEVLINK_SERIAL_VALUE_U16(raw_value);
@@ -534,6 +683,29 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
         sample_time_us,
         motor_values
     );
+
+    if (app->control_mode == CONTROL_MODE_HOLD) {
+        DevlinkSerialValue hold_values[count_of(g_control_testing_hold_fields)];
+        int32_t error_deg_tenths = (int32_t)app->hold_target_deg_tenths - (int32_t)angle_lp_deg_tenths;
+
+        hold_values[0] = DEVLINK_SERIAL_VALUE_F32(
+            control_testing_deg_tenths_to_f32(app->hold_target_deg_tenths)
+        );
+        hold_values[1] = DEVLINK_SERIAL_VALUE_F32(
+            control_testing_deg_tenths_to_f32(angle_lp_deg_tenths)
+        );
+        hold_values[2] = DEVLINK_SERIAL_VALUE_F32(
+            (float)error_deg_tenths / (float)ADC_C_TENTHS_PER_DEG
+        );
+        hold_values[3] = DEVLINK_SERIAL_VALUE_I16(app->hold_output_pct);
+        devlink_serial_print_sample(
+            &g_control_testing_device,
+            &g_control_testing_streams[6],
+            app->hold_sample_seq++,
+            sample_time_us,
+            hold_values
+        );
+    }
 }
 
 static void control_testing_tick(ControlTestingApp *app) {
@@ -547,7 +719,10 @@ static void control_testing_tick(ControlTestingApp *app) {
     app->next_adc_sample_at = make_timeout_time_ms(ADC_SAMPLE_PERIOD_MS);
 }
 
-// Command Input
+// Devlink Command Input
+// reads bytes from the PIO UART, assembles them into lines, and hands complete lines
+// to devlink for parsing. devlink matches the JSON command to a param get/set or custom
+// command and calls our callbacks. also handles idle-flush for partial lines.
 static void control_testing_poll_commands(
     PioUartRx *command_rx,
     DevlinkSerialLineBuffer *line_buffer,
