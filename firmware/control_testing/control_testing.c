@@ -20,9 +20,10 @@
 #define COMMAND_BUFFER_LEN 256u     // max line length for a single JSON command
 #define COMMAND_IDLE_FLUSH_MS 80u   // how long to wait before flushing a partial line?
 #define ADC_C_GPIO 28u              // adc_c potentiometer input
-#define ADC_SAMPLE_PERIOD_MS 100u   // slower telemetry keeps devlink responsive at 115200 baud
+#define PID_PERIOD_US 1000          // 1 kHz control loop
+#define TELEMETRY_PERIOD_MS 40u     // 25 Hz telemetry
 #define ADC_AVERAGE_SAMPLE_COUNT 16u // how many adc samples to average
-#define ADC_LP_ALPHA_DEFAULT_PCT 85u // default low pass alpha
+#define ADC_LP_ALPHA_DEFAULT_PCT 40u // default low pass alpha
 #define ADC_LP_ALPHA_MIN_PCT 1u     // minimum low pass alpha
 #define ADC_LP_ALPHA_MAX_PCT 100u   // maximum low pass alpha
 #define ADC_C_RAW_MIN 0u            // minimum useful pot reading
@@ -50,9 +51,11 @@ enum {
     PARAM_MOTOR_STATE,
     PARAM_MOTOR_DRIVE_PCT,
     PARAM_CONTROL_MODE,
-    PARAM_HOLD_TARGET_DEG_TENTHS,
-    PARAM_HOLD_DEADBAND_DEG_TENTHS,
+    PARAM_HOLD_TARGET_DEG,
+    PARAM_HOLD_DEADBAND_DEG,
     PARAM_HOLD_P_GAIN,
+    PARAM_HOLD_I_GAIN,
+    PARAM_HOLD_D_GAIN,
     PARAM_HOLD_MAX_DUTY,
 };
 
@@ -67,12 +70,19 @@ typedef struct {
     uint8_t motor_state;
     uint8_t motor_drive_pct;
     uint8_t control_mode;
-    uint16_t hold_target_deg_tenths;
-    uint16_t hold_deadband_deg_tenths;
-    uint8_t hold_p_gain;
+    float hold_target_deg;
+    float hold_deadband_deg;
+    float hold_p_gain;
+    float hold_i_gain;
+    float hold_d_gain;
     uint8_t hold_max_duty;
     int16_t hold_output_pct;
+    PositionHoldState hold_state;
+    uint16_t adc_raw;
+    uint16_t adc_avg_raw;
     uint16_t adc_lp_raw;
+    uint16_t angle_avg_deg_tenths;
+    uint16_t angle_lp_deg_tenths;
     uint32_t adc_raw_sample_seq;
     uint32_t adc_avg_sample_seq;
     uint32_t adc_lp_sample_seq;
@@ -80,13 +90,18 @@ typedef struct {
     uint32_t adc_angle_lp_sample_seq;
     uint32_t motor_sample_seq;
     uint32_t hold_sample_seq;
-    absolute_time_t next_adc_sample_at;
+    repeating_timer_t pid_timer;
+    absolute_time_t next_telemetry_at;
 } ControlTestingApp;
 
 typedef struct {
     uint16_t deg;
     uint16_t raw;
 } ControlTestingCalibrationPoint;
+
+// Forward Declarations
+static bool control_testing_pid_callback(repeating_timer_t *rt);
+static void control_testing_pid_tick(ControlTestingApp *app);
 
 // Devlink Forward Declarations
 // devlink calls these two functions when the host reads or writes a parameter.
@@ -215,41 +230,61 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
         "control.mode",
         DEVLINK_SERIAL_TYPE_U8,
         DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL),
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD),
         true,
         DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL),
         DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD),
         PARAM_CONTROL_MODE,
     },
     {
-        "hold.target_deg_tenths",
-        DEVLINK_SERIAL_TYPE_U16,
+        "hold.target_deg",
+        DEVLINK_SERIAL_TYPE_F32,
         DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_DEFAULT),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_DEFAULT),
         true,
-        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_MIN),
-        DEVLINK_SERIAL_VALUE_U16(HOLD_TARGET_MAX),
-        PARAM_HOLD_TARGET_DEG_TENTHS,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MIN),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MAX),
+        PARAM_HOLD_TARGET_DEG,
     },
     {
-        "hold.deadband_deg_tenths",
-        DEVLINK_SERIAL_TYPE_U16,
+        "hold.deadband_deg",
+        DEVLINK_SERIAL_TYPE_F32,
         DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_DEFAULT),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_DEFAULT),
         true,
-        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_MIN),
-        DEVLINK_SERIAL_VALUE_U16(HOLD_DEADBAND_MAX),
-        PARAM_HOLD_DEADBAND_DEG_TENTHS,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MIN),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MAX),
+        PARAM_HOLD_DEADBAND_DEG,
     },
     {
         "hold.p_gain",
-        DEVLINK_SERIAL_TYPE_U8,
+        DEVLINK_SERIAL_TYPE_F32,
         DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_DEFAULT),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_DEFAULT),
         true,
-        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_MIN),
-        DEVLINK_SERIAL_VALUE_U8(HOLD_P_GAIN_MAX),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MIN),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MAX),
         PARAM_HOLD_P_GAIN,
+    },
+    {
+        "hold.i_gain",
+        DEVLINK_SERIAL_TYPE_F32,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MIN),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MAX),
+        PARAM_HOLD_I_GAIN,
+    },
+    {
+        "hold.d_gain",
+        DEVLINK_SERIAL_TYPE_F32,
+        DEVLINK_SERIAL_ACCESS_RW,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_DEFAULT),
+        true,
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MIN),
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MAX),
+        PARAM_HOLD_D_GAIN,
     },
     {
         "hold.max_duty",
@@ -291,7 +326,7 @@ static const ControlTestingCalibrationPoint g_control_testing_calibration_points
 // the host at startup so it knows the full capabilities of this device.
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.6.0",
+    .firmware = "0.7.0",
     .commands = NULL,
     .command_count = 0u,
     .streams = g_control_testing_streams,
@@ -336,6 +371,7 @@ static void control_testing_apply_motor_output(ControlTestingApp *app) {
 // also sets up adc_c, motor_c, and sample timing
 static void control_testing_init(ControlTestingApp *app) {
     absolute_time_t now = get_absolute_time();
+    bool pid_timer_registered = false;
 
     hard_assert(app != NULL);
 
@@ -352,12 +388,15 @@ static void control_testing_init(ControlTestingApp *app) {
     app->angle_source_mode = ANGLE_SOURCE_BOTH;
     app->motor_state = MOTOR_STATE_COAST;
     app->motor_drive_pct = 0u;
-    app->control_mode = CONTROL_MODE_MANUAL;
-    app->hold_target_deg_tenths = HOLD_TARGET_DEFAULT;
-    app->hold_deadband_deg_tenths = HOLD_DEADBAND_DEFAULT;
+    app->control_mode = CONTROL_MODE_HOLD;
+    app->hold_target_deg = HOLD_TARGET_DEFAULT;
+    app->hold_deadband_deg = HOLD_DEADBAND_DEFAULT;
     app->hold_p_gain = HOLD_P_GAIN_DEFAULT;
+    app->hold_i_gain = HOLD_I_GAIN_DEFAULT;
+    app->hold_d_gain = HOLD_D_GAIN_DEFAULT;
     app->hold_max_duty = HOLD_MAX_DUTY_DEFAULT;
     app->hold_output_pct = 0;
+    app->hold_state = (PositionHoldState){0};
     app->adc_lp_raw = 0u;
     app->adc_raw_sample_seq = 0u;
     app->adc_avg_sample_seq = 0u;
@@ -366,10 +405,19 @@ static void control_testing_init(ControlTestingApp *app) {
     app->adc_angle_lp_sample_seq = 0u;
     app->motor_sample_seq = 0u;
     app->hold_sample_seq = 0u;
-    app->next_adc_sample_at = now;
+    app->next_telemetry_at = now;
 
     control_testing_apply_status_led(app);
     control_testing_apply_motor_output(app);
+    control_testing_pid_tick(app);
+
+    pid_timer_registered = add_repeating_timer_us(
+        -((int64_t)PID_PERIOD_US),
+        control_testing_pid_callback,
+        app,
+        &app->pid_timer
+    );
+    hard_assert(pid_timer_registered);
 }
 
 // Calibration Helpers
@@ -493,14 +541,20 @@ static bool control_testing_param_get(
         case PARAM_CONTROL_MODE:
             *out_value = DEVLINK_SERIAL_VALUE_U8(app->control_mode);
             return true;
-        case PARAM_HOLD_TARGET_DEG_TENTHS:
-            *out_value = DEVLINK_SERIAL_VALUE_U16(app->hold_target_deg_tenths);
+        case PARAM_HOLD_TARGET_DEG:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg);
             return true;
-        case PARAM_HOLD_DEADBAND_DEG_TENTHS:
-            *out_value = DEVLINK_SERIAL_VALUE_U16(app->hold_deadband_deg_tenths);
+        case PARAM_HOLD_DEADBAND_DEG:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_deadband_deg);
             return true;
         case PARAM_HOLD_P_GAIN:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->hold_p_gain);
+            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_p_gain);
+            return true;
+        case PARAM_HOLD_I_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_i_gain);
+            return true;
+        case PARAM_HOLD_D_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_d_gain);
             return true;
         case PARAM_HOLD_MAX_DUTY:
             *out_value = DEVLINK_SERIAL_VALUE_U8(app->hold_max_duty);
@@ -556,16 +610,24 @@ static bool control_testing_param_set(
                 app->motor_drive_pct = 0u;
                 app->hold_output_pct = 0;
                 control_testing_apply_motor_output(app);
+            } else if (app->control_mode == CONTROL_MODE_HOLD) {
+                app->hold_state = (PositionHoldState){0};
             }
             return true;
-        case PARAM_HOLD_TARGET_DEG_TENTHS:
-            app->hold_target_deg_tenths = (uint16_t)value.u32_value;
+        case PARAM_HOLD_TARGET_DEG:
+            app->hold_target_deg = value.f32_value;
             return true;
-        case PARAM_HOLD_DEADBAND_DEG_TENTHS:
-            app->hold_deadband_deg_tenths = (uint16_t)value.u32_value;
+        case PARAM_HOLD_DEADBAND_DEG:
+            app->hold_deadband_deg = value.f32_value;
             return true;
         case PARAM_HOLD_P_GAIN:
-            app->hold_p_gain = (uint8_t)value.u32_value;
+            app->hold_p_gain = value.f32_value;
+            return true;
+        case PARAM_HOLD_I_GAIN:
+            app->hold_i_gain = value.f32_value;
+            return true;
+        case PARAM_HOLD_D_GAIN:
+            app->hold_d_gain = value.f32_value;
             return true;
         case PARAM_HOLD_MAX_DUTY:
             app->hold_max_duty = (uint8_t)value.u32_value;
@@ -577,17 +639,43 @@ static bool control_testing_param_set(
     }
 }
 
-// Devlink Sample Emission
-// called every 100ms by the tick function. reads sensors, runs the controller,
-// then sends each stream's current values to the host as a timestamped sample.
+// PID Tick
+// called every 1ms. reads sensors, updates the LP filter, runs the PID controller,
+// and caches all values for the next telemetry emission.
+static void control_testing_pid_tick(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    app->adc_raw = control_testing_bound_adc_raw(adc_input_read_raw(&app->adc_c));
+    app->adc_avg_raw = control_testing_bound_adc_raw(
+        adc_input_read_average_raw(&app->adc_c, ADC_AVERAGE_SAMPLE_COUNT)
+    );
+    app->adc_lp_raw = control_testing_update_adc_lp(app, app->adc_avg_raw);
+    app->angle_avg_deg_tenths = control_testing_adc_raw_to_deg_tenths(app->adc_avg_raw);
+    app->angle_lp_deg_tenths = control_testing_adc_raw_to_deg_tenths(app->adc_lp_raw);
+
+    if (app->control_mode == CONTROL_MODE_HOLD) {
+        PositionHoldResult hold_result = position_hold_update(
+            app->hold_target_deg,
+            control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths),
+            app->hold_deadband_deg,
+            app->hold_p_gain,
+            app->hold_i_gain,
+            app->hold_d_gain,
+            app->hold_max_duty,
+            &app->hold_state
+        );
+        app->motor_state = hold_result.motor_state;
+        app->motor_drive_pct = hold_result.motor_drive_pct;
+        app->hold_output_pct = hold_result.output_pct;
+        control_testing_apply_motor_output(app);
+    }
+}
+
+// Telemetry Emission
+// called every 40ms. sends all stream samples to the host using the latest cached values.
 // devlink_serial_print_sample serializes the values as JSON over UART.
-static void control_testing_emit_adc_sample(ControlTestingApp *app) {
-    uint16_t raw_value = 0u;
-    uint16_t avg_raw_value = 0u;
-    uint16_t lp_raw_value = 0u;
-    uint16_t angle_avg_deg_tenths = 0u;
-    uint16_t angle_lp_deg_tenths = 0u;
-    uint64_t sample_time_us = 0u;
+static void control_testing_emit_telemetry(ControlTestingApp *app) {
+    uint64_t sample_time_us = time_us_64();
     DevlinkSerialValue values[count_of(g_control_testing_adc_fields)];
     DevlinkSerialValue avg_values[count_of(g_control_testing_adc_avg_fields)];
     DevlinkSerialValue lp_values[count_of(g_control_testing_adc_lp_fields)];
@@ -597,31 +685,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
 
     hard_assert(app != NULL);
 
-    raw_value = control_testing_bound_adc_raw(adc_input_read_raw(&app->adc_c));
-    avg_raw_value = control_testing_bound_adc_raw(
-        adc_input_read_average_raw(&app->adc_c, ADC_AVERAGE_SAMPLE_COUNT)
-    );
-    lp_raw_value = control_testing_update_adc_lp(app, avg_raw_value);
-    angle_avg_deg_tenths = control_testing_adc_raw_to_deg_tenths(avg_raw_value);
-    angle_lp_deg_tenths = control_testing_adc_raw_to_deg_tenths(lp_raw_value);
-
-    if (app->control_mode == CONTROL_MODE_HOLD) {
-        PositionHoldResult hold_result = position_hold_update(
-            app->hold_target_deg_tenths,
-            angle_lp_deg_tenths,
-            app->hold_deadband_deg_tenths,
-            app->hold_p_gain,
-            app->hold_max_duty
-        );
-        app->motor_state = hold_result.motor_state;
-        app->motor_drive_pct = hold_result.motor_drive_pct;
-        app->hold_output_pct = hold_result.output_pct;
-        control_testing_apply_motor_output(app);
-    }
-
-    sample_time_us = time_us_64();
-
-    values[0] = DEVLINK_SERIAL_VALUE_U16(raw_value);
+    values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_raw);
     devlink_serial_print_sample(
         &g_control_testing_device,
         &g_control_testing_streams[0],
@@ -630,7 +694,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
         values
     );
 
-    avg_values[0] = DEVLINK_SERIAL_VALUE_U16(avg_raw_value);
+    avg_values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_avg_raw);
     devlink_serial_print_sample(
         &g_control_testing_device,
         &g_control_testing_streams[1],
@@ -639,7 +703,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
         avg_values
     );
 
-    lp_values[0] = DEVLINK_SERIAL_VALUE_U16(lp_raw_value);
+    lp_values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_lp_raw);
     devlink_serial_print_sample(
         &g_control_testing_device,
         &g_control_testing_streams[2],
@@ -650,7 +714,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
 
     if (control_testing_should_emit_angle_avg(app)) {
         angle_avg_values[0] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(angle_avg_deg_tenths)
+            control_testing_deg_tenths_to_f32(app->angle_avg_deg_tenths)
         );
         devlink_serial_print_sample(
             &g_control_testing_device,
@@ -663,7 +727,7 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
 
     if (control_testing_should_emit_angle_lp(app)) {
         angle_lp_values[0] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(angle_lp_deg_tenths)
+            control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths)
         );
         devlink_serial_print_sample(
             &g_control_testing_device,
@@ -686,17 +750,11 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
 
     if (app->control_mode == CONTROL_MODE_HOLD) {
         DevlinkSerialValue hold_values[count_of(g_control_testing_hold_fields)];
-        int32_t error_deg_tenths = (int32_t)app->hold_target_deg_tenths - (int32_t)angle_lp_deg_tenths;
+        float actual_deg = control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths);
 
-        hold_values[0] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(app->hold_target_deg_tenths)
-        );
-        hold_values[1] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(angle_lp_deg_tenths)
-        );
-        hold_values[2] = DEVLINK_SERIAL_VALUE_F32(
-            (float)error_deg_tenths / (float)ADC_C_TENTHS_PER_DEG
-        );
+        hold_values[0] = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg);
+        hold_values[1] = DEVLINK_SERIAL_VALUE_F32(actual_deg);
+        hold_values[2] = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg - actual_deg);
         hold_values[3] = DEVLINK_SERIAL_VALUE_I16(app->hold_output_pct);
         devlink_serial_print_sample(
             &g_control_testing_device,
@@ -708,15 +766,18 @@ static void control_testing_emit_adc_sample(ControlTestingApp *app) {
     }
 }
 
+static bool control_testing_pid_callback(repeating_timer_t *rt) {
+    control_testing_pid_tick((ControlTestingApp *)rt->user_data);
+    return true;
+}
+
 static void control_testing_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
 
-    if (!time_reached(app->next_adc_sample_at)) {
-        return;
+    if (time_reached(app->next_telemetry_at)) {
+        control_testing_emit_telemetry(app);
+        app->next_telemetry_at = make_timeout_time_ms(TELEMETRY_PERIOD_MS);
     }
-
-    control_testing_emit_adc_sample(app);
-    app->next_adc_sample_at = make_timeout_time_ms(ADC_SAMPLE_PERIOD_MS);
 }
 
 // Devlink Command Input
