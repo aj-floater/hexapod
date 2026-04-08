@@ -38,6 +38,7 @@ pico_sdk_init()
 
 add_executable(control_testing
     control_testing.c
+    servo.c
     adc_input.c
     motor_pwm.c
     position_hold.c
@@ -68,6 +69,7 @@ target_link_libraries(control_testing
 # Add the standard include files to the build
 target_include_directories(control_testing PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/../common
 )
 
 pico_add_extra_outputs(control_testing)

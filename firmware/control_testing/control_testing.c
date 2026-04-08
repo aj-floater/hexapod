@@ -1,111 +1,180 @@
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
 #include "adc_input.h"
+#include "servo.h"
 #include "devlink_serial.h"
-#include "motor_pwm.h"
+#include "leg_pins.h"
 #include "pio_uart_rx.h"
-#include "position_hold.h"
 
 #ifndef PICO_DEFAULT_LED_PIN
 #error "control_testing requires PICO_DEFAULT_LED_PIN"
 #endif
 
-// Constants
-#define COMMAND_RX_GPIO 3u          // board RX pin for incoming commands
-#define COMMAND_BAUD 115200u        // UART speed
-#define COMMAND_BUFFER_LEN 256u     // max line length for a single JSON command
-#define COMMAND_IDLE_FLUSH_MS 80u   // how long to wait before flushing a partial line?
-#define ADC_C_GPIO 28u              // adc_c potentiometer input
-#define PID_PERIOD_US 1000          // 1 kHz control loop
-#define TELEMETRY_PERIOD_MS 40u     // 25 Hz telemetry
-#define ADC_AVERAGE_SAMPLE_COUNT 16u // how many adc samples to average
-#define ADC_LP_ALPHA_DEFAULT_PCT 40u // default low pass alpha
-#define ADC_LP_ALPHA_MIN_PCT 1u     // minimum low pass alpha
-#define ADC_LP_ALPHA_MAX_PCT 100u   // maximum low pass alpha
-#define ADC_C_RAW_MIN 0u            // minimum useful pot reading
-#define ADC_C_RAW_MAX 4080u         // maximum useful pot reading
-#define ADC_C_MIN_DEG 0u            // minimum reported angle
-#define ADC_C_MAX_DEG 180u          // maximum reported angle
-#define ADC_C_TENTHS_PER_DEG 10u    // one decimal place for reported angle
-#define MOTOR_C_IN1_GPIO 22u        // motor_c driver input 1
-#define MOTOR_C_IN2_GPIO 23u        // motor_c driver input 2
-#define MOTOR_PWM_HZ 20000u         // motor pwm frequency
-#define ANGLE_SOURCE_AVG 0u         // angle uses averaged adc
-#define ANGLE_SOURCE_LP 1u          // angle uses low pass adc
-#define ANGLE_SOURCE_BOTH 2u        // angle uses both averaged and low pass adc
-#define MOTOR_STATE_COAST 0u        // motor output is released
-#define MOTOR_STATE_BRAKE 1u        // motor output actively brakes
-#define MOTOR_STATE_FORWARD 2u      // motor drives forward
-#define MOTOR_STATE_REVERSE 3u      // motor drives reverse
+#define COMMAND_RX_GPIO 3u
+#define COMMAND_BAUD 115200u
+#define COMMAND_BUFFER_LEN 256u
+#define COMMAND_IDLE_FLUSH_MS 80u
+#define PID_PERIOD_US 1000
+#define TELEMETRY_PERIOD_MS 40u
+#define CONTROL_TESTING_SERVO_COUNT 3u
+#define CONTROL_TESTING_SERVO_USER_DATA_BASE ((uintptr_t)0x100u)
 
-
-// Parameter Ids
 enum {
-    PARAM_STATUS_LED_ON = 0,
-    PARAM_FILTER_ALPHA_PCT,
-    PARAM_ANGLE_SOURCE_MODE,
-    PARAM_MOTOR_STATE,
-    PARAM_MOTOR_DRIVE_PCT,
-    PARAM_CONTROL_MODE,
-    PARAM_HOLD_TARGET_DEG,
-    PARAM_HOLD_DEADBAND_DEG,
-    PARAM_HOLD_P_GAIN,
-    PARAM_HOLD_I_GAIN,
-    PARAM_HOLD_D_GAIN,
-    PARAM_HOLD_MAX_DUTY,
+    CONTROL_TESTING_SERVO_A = 0,
+    CONTROL_TESTING_SERVO_B,
+    CONTROL_TESTING_SERVO_C,
 };
 
-// App State
+enum {
+    CONTROL_TESTING_STREAM_ADC = 0,
+    CONTROL_TESTING_STREAM_ADC_AVG,
+    CONTROL_TESTING_STREAM_ADC_LP,
+    CONTROL_TESTING_STREAM_ANGLE_AVG,
+    CONTROL_TESTING_STREAM_ANGLE_LP,
+    CONTROL_TESTING_STREAM_MOTOR,
+    CONTROL_TESTING_STREAM_HOLD,
+    CONTROL_TESTING_STREAM_COUNT,
+};
+
+enum {
+    CONTROL_TESTING_APP_PARAM_STATUS_LED_ON = 0,
+};
+
+enum {
+    CONTROL_TESTING_SERVO_PARAM_FILTER_ALPHA_PCT = 0,
+    CONTROL_TESTING_SERVO_PARAM_MOTOR_STATE,
+    CONTROL_TESTING_SERVO_PARAM_MOTOR_DRIVE_PCT,
+    CONTROL_TESTING_SERVO_PARAM_CONTROL_MODE,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_TARGET_DEG,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_DEADBAND_DEG,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_P_GAIN,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_I_GAIN,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_D_GAIN,
+    CONTROL_TESTING_SERVO_PARAM_HOLD_MAX_DUTY,
+    CONTROL_TESTING_SERVO_PARAM_COUNT,
+};
+
+#define CONTROL_TESTING_SERVO_USER_DATA(servo_index, param_id) \
+    (CONTROL_TESTING_SERVO_USER_DATA_BASE + (((uintptr_t)(servo_index)) << 4u) + (uintptr_t)(param_id))
+
+#define CONTROL_TESTING_SERVO_PARAM_SET(letter, servo_index, control_default) \
+    { \
+        "servo." #letter ".filter.alpha_pct", \
+        DEVLINK_SERIAL_TYPE_U8, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_FILTER_ALPHA_DEFAULT_PCT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_FILTER_ALPHA_MIN_PCT), \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_FILTER_ALPHA_MAX_PCT), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_FILTER_ALPHA_PCT), \
+    }, \
+    { \
+        "servo." #letter ".motor.state", \
+        DEVLINK_SERIAL_TYPE_U8, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_MOTOR_STATE_COAST), \
+        true, \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_MOTOR_STATE_COAST), \
+        DEVLINK_SERIAL_VALUE_U8(SERVO_MOTOR_STATE_REVERSE), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_MOTOR_STATE), \
+    }, \
+    { \
+        "servo." #letter ".motor.drive_pct", \
+        DEVLINK_SERIAL_TYPE_U8, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_U8(0u), \
+        true, \
+        DEVLINK_SERIAL_VALUE_U8(0u), \
+        DEVLINK_SERIAL_VALUE_U8(100u), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_MOTOR_DRIVE_PCT), \
+    }, \
+    { \
+        "servo." #letter ".control.mode", \
+        DEVLINK_SERIAL_TYPE_U8, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_U8(control_default), \
+        true, \
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL), \
+        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_CONTROL_MODE), \
+    }, \
+    { \
+        "servo." #letter ".hold.target_deg", \
+        DEVLINK_SERIAL_TYPE_F32, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MIN), \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MAX), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_TARGET_DEG), \
+    }, \
+    { \
+        "servo." #letter ".hold.deadband_deg", \
+        DEVLINK_SERIAL_TYPE_F32, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MIN), \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MAX), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_DEADBAND_DEG), \
+    }, \
+    { \
+        "servo." #letter ".hold.p_gain", \
+        DEVLINK_SERIAL_TYPE_F32, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MIN), \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MAX), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_P_GAIN), \
+    }, \
+    { \
+        "servo." #letter ".hold.i_gain", \
+        DEVLINK_SERIAL_TYPE_F32, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MIN), \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MAX), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_I_GAIN), \
+    }, \
+    { \
+        "servo." #letter ".hold.d_gain", \
+        DEVLINK_SERIAL_TYPE_F32, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MIN), \
+        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MAX), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_D_GAIN), \
+    }, \
+    { \
+        "servo." #letter ".hold.max_duty", \
+        DEVLINK_SERIAL_TYPE_U8, \
+        DEVLINK_SERIAL_ACCESS_RW, \
+        DEVLINK_SERIAL_VALUE_U8(HOLD_MAX_DUTY_DEFAULT), \
+        true, \
+        DEVLINK_SERIAL_VALUE_U8(0u), \
+        DEVLINK_SERIAL_VALUE_U8(100u), \
+        CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_MAX_DUTY), \
+    }
+
 typedef struct {
     bool status_led_on;
-    AdcInput adc_c;
-    MotorPwm motor_c;
-    bool adc_lp_ready;
-    uint8_t adc_lp_alpha_pct;
-    uint8_t angle_source_mode;
-    uint8_t motor_state;
-    uint8_t motor_drive_pct;
-    uint8_t control_mode;
-    float hold_target_deg;
-    float hold_deadband_deg;
-    float hold_p_gain;
-    float hold_i_gain;
-    float hold_d_gain;
-    uint8_t hold_max_duty;
-    int16_t hold_output_pct;
-    PositionHoldState hold_state;
-    uint16_t adc_raw;
-    uint16_t adc_avg_raw;
-    uint16_t adc_lp_raw;
-    uint16_t angle_avg_deg_tenths;
-    uint16_t angle_lp_deg_tenths;
-    uint32_t adc_raw_sample_seq;
-    uint32_t adc_avg_sample_seq;
-    uint32_t adc_lp_sample_seq;
-    uint32_t adc_angle_avg_sample_seq;
-    uint32_t adc_angle_lp_sample_seq;
-    uint32_t motor_sample_seq;
-    uint32_t hold_sample_seq;
+    Servo servos[CONTROL_TESTING_SERVO_COUNT];
     repeating_timer_t pid_timer;
     absolute_time_t next_telemetry_at;
+    uint32_t stream_sample_seq[CONTROL_TESTING_STREAM_COUNT];
 } ControlTestingApp;
 
-typedef struct {
-    uint16_t deg;
-    uint16_t raw;
-} ControlTestingCalibrationPoint;
-
-// Forward Declarations
 static bool control_testing_pid_callback(repeating_timer_t *rt);
 static void control_testing_pid_tick(ControlTestingApp *app);
-
-// Devlink Forward Declarations
-// devlink calls these two functions when the host reads or writes a parameter.
-// they are defined further down but declared here so the device descriptor can reference them.
+static void control_testing_emit_telemetry(ControlTestingApp *app);
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -119,48 +188,60 @@ static bool control_testing_param_set(
     const char **out_error_message
 );
 
-// Devlink Stream Definitions
-// each stream is a named channel of time-series data sent to the host for plotting.
-// a stream has one or more fields, each with a name, type, and unit.
-// for example the "adc" stream sends one U16 value called "adc_c_raw" with unit "adc".
-// the host uses these definitions to label axes and group plots automatically.
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_fields[] = {
+    {"adc_a_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+    {"adc_b_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
     {"adc_c_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_avg_fields[] = {
+    {"adc_a_avg_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+    {"adc_b_avg_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
     {"adc_c_avg_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_adc_lp_fields[] = {
+    {"adc_a_lp_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
+    {"adc_b_lp_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
     {"adc_c_lp_raw", DEVLINK_SERIAL_TYPE_U16, "adc"},
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_avg_fields[] = {
+    {"adc_a_avg_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"adc_b_avg_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
     {"adc_c_avg_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
 };
 
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_angle_lp_fields[] = {
+    {"adc_a_lp_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"adc_b_lp_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
     {"adc_c_lp_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
 };
 
-// Motor Stream
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_motor_fields[] = {
-    {"motor_state", DEVLINK_SERIAL_TYPE_U8, "state"},
-    {"motor_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
+    {"motor_a_state", DEVLINK_SERIAL_TYPE_U8, "state"},
+    {"motor_a_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
+    {"motor_b_state", DEVLINK_SERIAL_TYPE_U8, "state"},
+    {"motor_b_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
+    {"motor_c_state", DEVLINK_SERIAL_TYPE_U8, "state"},
+    {"motor_c_drive_pct", DEVLINK_SERIAL_TYPE_U8, "pct"},
 };
 
-// Position Hold Stream
 static const DevlinkSerialStreamFieldDescriptor g_control_testing_hold_fields[] = {
-    {"hold_target_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
-    {"hold_actual_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
-    {"hold_error_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
-    {"hold_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
+    {"hold_a_target_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_a_actual_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_a_error_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_a_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
+    {"hold_b_target_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_b_actual_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_b_error_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_b_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
+    {"hold_c_target_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_c_actual_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_c_error_deg", DEVLINK_SERIAL_TYPE_F32, "deg"},
+    {"hold_c_output_pct", DEVLINK_SERIAL_TYPE_I16, "pct"},
 };
 
-// Devlink Stream Registry
-// this array registers all streams with the device. the host discovers these at startup
-// and creates a plot for each one. order matters — streams are referenced by index elsewhere.
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
     {"control_testing.adc_avg", g_control_testing_adc_avg_fields, count_of(g_control_testing_adc_avg_fields)},
@@ -171,10 +252,6 @@ static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
     {"control_testing.hold", g_control_testing_hold_fields, count_of(g_control_testing_hold_fields)},
 };
 
-// Devlink Parameter Definitions
-// each param is a named value the host can read and write, shown as a slider or toggle in the UI.
-// fields: name, type, access (RO or RW), default, has_bounds, min, max, user_data (our enum ID).
-// devlink enforces min/max bounds before calling our setter, so we don't need to range-check.
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     {
         "status_led.on",
@@ -184,121 +261,14 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
         false,
         DEVLINK_SERIAL_VALUE_BOOL(false),
         DEVLINK_SERIAL_VALUE_BOOL(true),
-        PARAM_STATUS_LED_ON,
+        CONTROL_TESTING_APP_PARAM_STATUS_LED_ON,
     },
-    {
-        "filter.alpha_pct",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_DEFAULT_PCT),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_MIN_PCT),
-        DEVLINK_SERIAL_VALUE_U8(ADC_LP_ALPHA_MAX_PCT),
-        PARAM_FILTER_ALPHA_PCT,
-    },
-    {
-        "angle.source_mode",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_BOTH),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_AVG),
-        DEVLINK_SERIAL_VALUE_U8(ANGLE_SOURCE_BOTH),
-        PARAM_ANGLE_SOURCE_MODE,
-    },
-    {
-        "motor.state",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_COAST),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_COAST),
-        DEVLINK_SERIAL_VALUE_U8(MOTOR_STATE_REVERSE),
-        PARAM_MOTOR_STATE,
-    },
-    {
-        "motor.drive_pct",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(0u),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(0u),
-        DEVLINK_SERIAL_VALUE_U8(100u),
-        PARAM_MOTOR_DRIVE_PCT,
-    },
-    {
-        "control.mode",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_MANUAL),
-        DEVLINK_SERIAL_VALUE_U8(CONTROL_MODE_HOLD),
-        PARAM_CONTROL_MODE,
-    },
-    {
-        "hold.target_deg",
-        DEVLINK_SERIAL_TYPE_F32,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MIN),
-        DEVLINK_SERIAL_VALUE_F32(HOLD_TARGET_MAX),
-        PARAM_HOLD_TARGET_DEG,
-    },
-    {
-        "hold.deadband_deg",
-        DEVLINK_SERIAL_TYPE_F32,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MIN),
-        DEVLINK_SERIAL_VALUE_F32(HOLD_DEADBAND_MAX),
-        PARAM_HOLD_DEADBAND_DEG,
-    },
-    {
-        "hold.p_gain",
-        DEVLINK_SERIAL_TYPE_F32,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MIN),
-        DEVLINK_SERIAL_VALUE_F32(HOLD_P_GAIN_MAX),
-        PARAM_HOLD_P_GAIN,
-    },
-    {
-        "hold.i_gain",
-        DEVLINK_SERIAL_TYPE_F32,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MIN),
-        DEVLINK_SERIAL_VALUE_F32(HOLD_I_GAIN_MAX),
-        PARAM_HOLD_I_GAIN,
-    },
-    {
-        "hold.d_gain",
-        DEVLINK_SERIAL_TYPE_F32,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MIN),
-        DEVLINK_SERIAL_VALUE_F32(HOLD_D_GAIN_MAX),
-        PARAM_HOLD_D_GAIN,
-    },
-    {
-        "hold.max_duty",
-        DEVLINK_SERIAL_TYPE_U8,
-        DEVLINK_SERIAL_ACCESS_RW,
-        DEVLINK_SERIAL_VALUE_U8(HOLD_MAX_DUTY_DEFAULT),
-        true,
-        DEVLINK_SERIAL_VALUE_U8(0u),
-        DEVLINK_SERIAL_VALUE_U8(100u),
-        PARAM_HOLD_MAX_DUTY,
-    },
+    CONTROL_TESTING_SERVO_PARAM_SET(a, CONTROL_TESTING_SERVO_A, CONTROL_MODE_MANUAL),
+    CONTROL_TESTING_SERVO_PARAM_SET(b, CONTROL_TESTING_SERVO_B, CONTROL_MODE_MANUAL),
+    CONTROL_TESTING_SERVO_PARAM_SET(c, CONTROL_TESTING_SERVO_C, CONTROL_MODE_HOLD),
 };
 
-static const ControlTestingCalibrationPoint g_control_testing_calibration_points[] = {
+static const ServoCalibrationPoint g_control_testing_calibration_points[] = {
     {0u, 3943u},
     {10u, 3746u},
     {20u, 3575u},
@@ -320,10 +290,39 @@ static const ControlTestingCalibrationPoint g_control_testing_calibration_points
     {180u, 285u},
 };
 
-// Devlink Device Descriptor
-// this is the top-level object that ties everything together: device name, firmware version,
-// the list of streams and params, and the getter/setter callbacks. devlink sends this to
-// the host at startup so it knows the full capabilities of this device.
+static const ServoConfig g_control_testing_servo_configs[CONTROL_TESTING_SERVO_COUNT] = {
+    {
+        'a',
+        "motor_a",
+        LEG_POT_A_GPIO,
+        LEG_MOTOR_A_IN1_GPIO,
+        LEG_MOTOR_A_IN2_GPIO,
+        CONTROL_MODE_MANUAL,
+        g_control_testing_calibration_points,
+        count_of(g_control_testing_calibration_points),
+    },
+    {
+        'b',
+        "motor_b",
+        LEG_POT_B_GPIO,
+        LEG_MOTOR_B_IN1_GPIO,
+        LEG_MOTOR_B_IN2_GPIO,
+        CONTROL_MODE_MANUAL,
+        g_control_testing_calibration_points,
+        count_of(g_control_testing_calibration_points),
+    },
+    {
+        'c',
+        "motor_c",
+        LEG_POT_C_GPIO,
+        LEG_MOTOR_C_IN1_GPIO,
+        LEG_MOTOR_C_IN2_GPIO,
+        CONTROL_MODE_HOLD,
+        g_control_testing_calibration_points,
+        count_of(g_control_testing_calibration_points),
+    },
+};
+
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
     .firmware = "0.7.0",
@@ -337,38 +336,59 @@ static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .param_setter = control_testing_param_set,
 };
 
-// LED Helpers
-// writes current app state to LED
+static Servo *control_testing_get_servo(ControlTestingApp *app, uint8_t servo_index) {
+    hard_assert(app != NULL);
+
+    if (servo_index >= CONTROL_TESTING_SERVO_COUNT) {
+        return NULL;
+    }
+    return &app->servos[servo_index];
+}
+
+static const Servo *control_testing_get_servo_const(
+    const ControlTestingApp *app,
+    uint8_t servo_index
+) {
+    hard_assert(app != NULL);
+
+    if (servo_index >= CONTROL_TESTING_SERVO_COUNT) {
+        return NULL;
+    }
+    return &app->servos[servo_index];
+}
+
+static bool control_testing_decode_servo_user_data(
+    uintptr_t user_data,
+    uint8_t *out_servo_index,
+    uint8_t *out_param_id
+) {
+    uint8_t servo_index = 0u;
+    uint8_t param_id = 0u;
+
+    hard_assert(out_servo_index != NULL);
+    hard_assert(out_param_id != NULL);
+
+    if (user_data < CONTROL_TESTING_SERVO_USER_DATA_BASE) {
+        return false;
+    }
+
+    servo_index = (uint8_t)((user_data - CONTROL_TESTING_SERVO_USER_DATA_BASE) >> 4u);
+    param_id = (uint8_t)((user_data - CONTROL_TESTING_SERVO_USER_DATA_BASE) & 0x0fu);
+
+    if (servo_index >= CONTROL_TESTING_SERVO_COUNT || param_id >= CONTROL_TESTING_SERVO_PARAM_COUNT) {
+        return false;
+    }
+
+    *out_servo_index = servo_index;
+    *out_param_id = param_id;
+    return true;
+}
+
 static void control_testing_apply_status_led(const ControlTestingApp *app) {
     hard_assert(app != NULL);
     gpio_put(PICO_DEFAULT_LED_PIN, app->status_led_on);
 }
 
-// Motor Helpers
-// writes current app state to the motor driver
-static void control_testing_apply_motor_output(ControlTestingApp *app) {
-    hard_assert(app != NULL);
-
-    switch (app->motor_state) {
-        case MOTOR_STATE_BRAKE:
-            motor_pwm_brake(&app->motor_c);
-            break;
-        case MOTOR_STATE_FORWARD:
-            motor_pwm_set_forward_duty(&app->motor_c, app->motor_drive_pct);
-            break;
-        case MOTOR_STATE_REVERSE:
-            motor_pwm_set_reverse_duty(&app->motor_c, app->motor_drive_pct);
-            break;
-        case MOTOR_STATE_COAST:
-        default:
-            motor_pwm_coast(&app->motor_c);
-            break;
-    }
-}
-
-// ADC Helpers
-// sets up the LED GPIO as output
-// also sets up adc_c, motor_c, and sample timing
 static void control_testing_init(ControlTestingApp *app) {
     absolute_time_t now = get_absolute_time();
     bool pid_timer_registered = false;
@@ -379,36 +399,14 @@ static void control_testing_init(ControlTestingApp *app) {
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
 
     adc_input_system_init();
-    adc_input_init(&app->adc_c, ADC_C_GPIO);
-    motor_pwm_init(&app->motor_c, "motor_c", MOTOR_C_IN1_GPIO, MOTOR_C_IN2_GPIO, MOTOR_PWM_HZ);
 
     app->status_led_on = false;
-    app->adc_lp_ready = false;
-    app->adc_lp_alpha_pct = ADC_LP_ALPHA_DEFAULT_PCT;
-    app->angle_source_mode = ANGLE_SOURCE_BOTH;
-    app->motor_state = MOTOR_STATE_COAST;
-    app->motor_drive_pct = 0u;
-    app->control_mode = CONTROL_MODE_HOLD;
-    app->hold_target_deg = HOLD_TARGET_DEFAULT;
-    app->hold_deadband_deg = HOLD_DEADBAND_DEFAULT;
-    app->hold_p_gain = HOLD_P_GAIN_DEFAULT;
-    app->hold_i_gain = HOLD_I_GAIN_DEFAULT;
-    app->hold_d_gain = HOLD_D_GAIN_DEFAULT;
-    app->hold_max_duty = HOLD_MAX_DUTY_DEFAULT;
-    app->hold_output_pct = 0;
-    app->hold_state = (PositionHoldState){0};
-    app->adc_lp_raw = 0u;
-    app->adc_raw_sample_seq = 0u;
-    app->adc_avg_sample_seq = 0u;
-    app->adc_lp_sample_seq = 0u;
-    app->adc_angle_avg_sample_seq = 0u;
-    app->adc_angle_lp_sample_seq = 0u;
-    app->motor_sample_seq = 0u;
-    app->hold_sample_seq = 0u;
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        servo_init(&app->servos[servo_index], &g_control_testing_servo_configs[servo_index]);
+    }
     app->next_telemetry_at = now;
 
     control_testing_apply_status_led(app);
-    control_testing_apply_motor_output(app);
     control_testing_pid_tick(app);
 
     pid_timer_registered = add_repeating_timer_us(
@@ -420,153 +418,72 @@ static void control_testing_init(ControlTestingApp *app) {
     hard_assert(pid_timer_registered);
 }
 
-// Calibration Helpers
-// clamps the raw adc value to the range we can actually use
-static uint16_t control_testing_bound_adc_raw(uint16_t raw_value) {
-    if (raw_value < ADC_C_RAW_MIN) {
-        return ADC_C_RAW_MIN;
-    }
-    if (raw_value > ADC_C_RAW_MAX) {
-        return ADC_C_RAW_MAX;
-    }
-    return raw_value;
-}
-
-// converts the bounded raw value into degrees using the measured calibration points
-static uint16_t control_testing_adc_raw_to_deg_tenths(uint16_t raw_value) {
-    const ControlTestingCalibrationPoint *upper_point = NULL;
-    const ControlTestingCalibrationPoint *lower_point = NULL;
-    uint32_t raw_span = 0u;
-    uint32_t raw_offset = 0u;
-    uint32_t deg_span = 0u;
-    uint32_t interpolated_deg_tenths = 0u;
-
-    raw_value = control_testing_bound_adc_raw(raw_value);
-
-    if (raw_value >= g_control_testing_calibration_points[0].raw) {
-        return (uint16_t)(g_control_testing_calibration_points[0].deg * ADC_C_TENTHS_PER_DEG);
-    }
-    if (raw_value <= g_control_testing_calibration_points[count_of(g_control_testing_calibration_points) - 1u].raw) {
-        return (uint16_t)(
-            g_control_testing_calibration_points[count_of(g_control_testing_calibration_points) - 1u].deg
-            * ADC_C_TENTHS_PER_DEG
-        );
-    }
-
-    for (size_t point_index = 0u; point_index + 1u < count_of(g_control_testing_calibration_points); point_index++) {
-        upper_point = &g_control_testing_calibration_points[point_index];
-        lower_point = &g_control_testing_calibration_points[point_index + 1u];
-
-        if (raw_value <= upper_point->raw && raw_value >= lower_point->raw) {
-            raw_span = (uint32_t)(upper_point->raw - lower_point->raw);
-            raw_offset = (uint32_t)(upper_point->raw - raw_value);
-            deg_span = (uint32_t)(lower_point->deg - upper_point->deg);
-            interpolated_deg_tenths = (uint32_t)(upper_point->deg * ADC_C_TENTHS_PER_DEG)
-                + ((raw_offset * deg_span * ADC_C_TENTHS_PER_DEG) + (raw_span / 2u)) / raw_span;
-            return (uint16_t)interpolated_deg_tenths;
-        }
-    }
-
-    return (uint16_t)(ADC_C_MAX_DEG * ADC_C_TENTHS_PER_DEG);
-}
-
-// converts internal tenths-of-a-degree values into float degrees for devlink
 static float control_testing_deg_tenths_to_f32(uint16_t deg_tenths) {
-    return (float)deg_tenths / (float)ADC_C_TENTHS_PER_DEG;
+    return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
 }
 
-// Filter Helpers
-// updates the low pass value using the averaged adc reading
-static uint16_t control_testing_update_adc_lp(ControlTestingApp *app, uint16_t avg_raw_value) {
-    uint32_t filtered_raw = 0u;
-    uint32_t previous_weight = 0u;
-
-    hard_assert(app != NULL);
-
-    if (!app->adc_lp_ready) {
-        app->adc_lp_raw = avg_raw_value;
-        app->adc_lp_ready = true;
-        return app->adc_lp_raw;
-    }
-
-    previous_weight = (uint32_t)(ADC_LP_ALPHA_MAX_PCT - app->adc_lp_alpha_pct);
-    filtered_raw = ((uint32_t)app->adc_lp_alpha_pct * avg_raw_value)
-        + (previous_weight * app->adc_lp_raw);
-    app->adc_lp_raw = (uint16_t)((filtered_raw + 50u) / 100u);
-    app->adc_lp_raw = control_testing_bound_adc_raw(app->adc_lp_raw);
-    return app->adc_lp_raw;
-}
-
-// tells the firmware which angle stream or streams should be sent
-static bool control_testing_should_emit_angle_avg(const ControlTestingApp *app) {
-    hard_assert(app != NULL);
-    return app->angle_source_mode == ANGLE_SOURCE_AVG || app->angle_source_mode == ANGLE_SOURCE_BOTH;
-}
-
-static bool control_testing_should_emit_angle_lp(const ControlTestingApp *app) {
-    hard_assert(app != NULL);
-    return app->angle_source_mode == ANGLE_SOURCE_LP || app->angle_source_mode == ANGLE_SOURCE_BOTH;
-}
-
-// Devlink Parameter Getter
-// called by devlink when the host reads a parameter.
-// we look up which param it is using the user_data enum ID, then return the current app value.
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
     DevlinkSerialValue *out_value
 ) {
     ControlTestingApp *app = (ControlTestingApp *)context;
+    const Servo *servo = NULL;
+    uint8_t servo_index = 0u;
+    uint8_t local_param_id = 0u;
 
     hard_assert(app != NULL);
     hard_assert(param != NULL);
     hard_assert(out_value != NULL);
 
-    switch ((int)param->user_data) {
-        case PARAM_STATUS_LED_ON:
-            *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
+    if (param->user_data == CONTROL_TESTING_APP_PARAM_STATUS_LED_ON) {
+        *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
+        return true;
+    }
+
+    if (!control_testing_decode_servo_user_data(param->user_data, &servo_index, &local_param_id)) {
+        return false;
+    }
+
+    servo = control_testing_get_servo_const(app, servo_index);
+    hard_assert(servo != NULL);
+
+    switch (local_param_id) {
+        case CONTROL_TESTING_SERVO_PARAM_FILTER_ALPHA_PCT:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(servo->settings.filter_alpha_pct);
             return true;
-        case PARAM_FILTER_ALPHA_PCT:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->adc_lp_alpha_pct);
+        case CONTROL_TESTING_SERVO_PARAM_MOTOR_STATE:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(servo->telemetry.motor_state);
             return true;
-        case PARAM_ANGLE_SOURCE_MODE:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->angle_source_mode);
+        case CONTROL_TESTING_SERVO_PARAM_MOTOR_DRIVE_PCT:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(servo->telemetry.motor_drive_pct);
             return true;
-        case PARAM_MOTOR_STATE:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->motor_state);
+        case CONTROL_TESTING_SERVO_PARAM_CONTROL_MODE:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(servo->control_mode);
             return true;
-        case PARAM_MOTOR_DRIVE_PCT:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->motor_drive_pct);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_TARGET_DEG:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_target_deg);
             return true;
-        case PARAM_CONTROL_MODE:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->control_mode);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_DEADBAND_DEG:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_deadband_deg);
             return true;
-        case PARAM_HOLD_TARGET_DEG:
-            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_P_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_p_gain);
             return true;
-        case PARAM_HOLD_DEADBAND_DEG:
-            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_deadband_deg);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_I_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_i_gain);
             return true;
-        case PARAM_HOLD_P_GAIN:
-            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_p_gain);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_D_GAIN:
+            *out_value = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_d_gain);
             return true;
-        case PARAM_HOLD_I_GAIN:
-            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_i_gain);
-            return true;
-        case PARAM_HOLD_D_GAIN:
-            *out_value = DEVLINK_SERIAL_VALUE_F32(app->hold_d_gain);
-            return true;
-        case PARAM_HOLD_MAX_DUTY:
-            *out_value = DEVLINK_SERIAL_VALUE_U8(app->hold_max_duty);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_MAX_DUTY:
+            *out_value = DEVLINK_SERIAL_VALUE_U8(servo->settings.hold_max_duty);
             return true;
         default:
             return false;
     }
 }
 
-// Devlink Parameter Setter
-// called by devlink when the host writes a parameter.
-// we store the new value in app state, then apply any side effects (e.g. updating motor output).
 static bool control_testing_param_set(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -575,6 +492,9 @@ static bool control_testing_param_set(
     const char **out_error_message
 ) {
     ControlTestingApp *app = (ControlTestingApp *)context;
+    Servo *servo = NULL;
+    uint8_t servo_index = 0u;
+    uint8_t local_param_id = 0u;
 
     hard_assert(app != NULL);
     hard_assert(param != NULL);
@@ -584,53 +504,51 @@ static bool control_testing_param_set(
     *out_error_code = NULL;
     *out_error_message = NULL;
 
-    switch ((int)param->user_data) {
-        case PARAM_STATUS_LED_ON:
-            app->status_led_on = value.bool_value;
-            control_testing_apply_status_led(app);
+    if (param->user_data == CONTROL_TESTING_APP_PARAM_STATUS_LED_ON) {
+        app->status_led_on = value.bool_value;
+        control_testing_apply_status_led(app);
+        return true;
+    }
+
+    if (!control_testing_decode_servo_user_data(param->user_data, &servo_index, &local_param_id)) {
+        *out_error_code = "unknown_param";
+        *out_error_message = "unknown parameter";
+        return false;
+    }
+
+    servo = control_testing_get_servo(app, servo_index);
+    hard_assert(servo != NULL);
+
+    switch (local_param_id) {
+        case CONTROL_TESTING_SERVO_PARAM_FILTER_ALPHA_PCT:
+            servo->settings.filter_alpha_pct = (uint8_t)value.u32_value;
             return true;
-        case PARAM_FILTER_ALPHA_PCT:
-            app->adc_lp_alpha_pct = (uint8_t)value.u32_value;
+        case CONTROL_TESTING_SERVO_PARAM_MOTOR_STATE:
+            servo_set_motor_state(servo, (uint8_t)value.u32_value);
             return true;
-        case PARAM_ANGLE_SOURCE_MODE:
-            app->angle_source_mode = (uint8_t)value.u32_value;
+        case CONTROL_TESTING_SERVO_PARAM_MOTOR_DRIVE_PCT:
+            servo_set_motor_drive_pct(servo, (uint8_t)value.u32_value);
             return true;
-        case PARAM_MOTOR_STATE:
-            app->motor_state = (uint8_t)value.u32_value;
-            control_testing_apply_motor_output(app);
+        case CONTROL_TESTING_SERVO_PARAM_CONTROL_MODE:
+            servo_set_control_mode(servo, (uint8_t)value.u32_value);
             return true;
-        case PARAM_MOTOR_DRIVE_PCT:
-            app->motor_drive_pct = (uint8_t)value.u32_value;
-            control_testing_apply_motor_output(app);
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_TARGET_DEG:
+            servo->settings.hold_target_deg = value.f32_value;
             return true;
-        case PARAM_CONTROL_MODE:
-            app->control_mode = (uint8_t)value.u32_value;
-            if (app->control_mode == CONTROL_MODE_MANUAL) {
-                app->motor_state = MOTOR_STATE_COAST;
-                app->motor_drive_pct = 0u;
-                app->hold_output_pct = 0;
-                control_testing_apply_motor_output(app);
-            } else if (app->control_mode == CONTROL_MODE_HOLD) {
-                app->hold_state = (PositionHoldState){0};
-            }
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_DEADBAND_DEG:
+            servo->settings.hold_deadband_deg = value.f32_value;
             return true;
-        case PARAM_HOLD_TARGET_DEG:
-            app->hold_target_deg = value.f32_value;
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_P_GAIN:
+            servo->settings.hold_p_gain = value.f32_value;
             return true;
-        case PARAM_HOLD_DEADBAND_DEG:
-            app->hold_deadband_deg = value.f32_value;
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_I_GAIN:
+            servo->settings.hold_i_gain = value.f32_value;
             return true;
-        case PARAM_HOLD_P_GAIN:
-            app->hold_p_gain = value.f32_value;
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_D_GAIN:
+            servo->settings.hold_d_gain = value.f32_value;
             return true;
-        case PARAM_HOLD_I_GAIN:
-            app->hold_i_gain = value.f32_value;
-            return true;
-        case PARAM_HOLD_D_GAIN:
-            app->hold_d_gain = value.f32_value;
-            return true;
-        case PARAM_HOLD_MAX_DUTY:
-            app->hold_max_duty = (uint8_t)value.u32_value;
+        case CONTROL_TESTING_SERVO_PARAM_HOLD_MAX_DUTY:
+            servo->settings.hold_max_duty = (uint8_t)value.u32_value;
             return true;
         default:
             *out_error_code = "unknown_param";
@@ -639,131 +557,96 @@ static bool control_testing_param_set(
     }
 }
 
-// PID Tick
-// called every 1ms. reads sensors, updates the LP filter, runs the PID controller,
-// and caches all values for the next telemetry emission.
 static void control_testing_pid_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
 
-    app->adc_raw = control_testing_bound_adc_raw(adc_input_read_raw(&app->adc_c));
-    app->adc_avg_raw = control_testing_bound_adc_raw(
-        adc_input_read_average_raw(&app->adc_c, ADC_AVERAGE_SAMPLE_COUNT)
-    );
-    app->adc_lp_raw = control_testing_update_adc_lp(app, app->adc_avg_raw);
-    app->angle_avg_deg_tenths = control_testing_adc_raw_to_deg_tenths(app->adc_avg_raw);
-    app->angle_lp_deg_tenths = control_testing_adc_raw_to_deg_tenths(app->adc_lp_raw);
-
-    if (app->control_mode == CONTROL_MODE_HOLD) {
-        PositionHoldResult hold_result = position_hold_update(
-            app->hold_target_deg,
-            control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths),
-            app->hold_deadband_deg,
-            app->hold_p_gain,
-            app->hold_i_gain,
-            app->hold_d_gain,
-            app->hold_max_duty,
-            &app->hold_state
-        );
-        app->motor_state = hold_result.motor_state;
-        app->motor_drive_pct = hold_result.motor_drive_pct;
-        app->hold_output_pct = hold_result.output_pct;
-        control_testing_apply_motor_output(app);
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        servo_tick(&app->servos[servo_index]);
     }
 }
 
-// Telemetry Emission
-// called every 40ms. sends all stream samples to the host using the latest cached values.
-// devlink_serial_print_sample serializes the values as JSON over UART.
 static void control_testing_emit_telemetry(ControlTestingApp *app) {
     uint64_t sample_time_us = time_us_64();
-    DevlinkSerialValue values[count_of(g_control_testing_adc_fields)];
-    DevlinkSerialValue avg_values[count_of(g_control_testing_adc_avg_fields)];
-    DevlinkSerialValue lp_values[count_of(g_control_testing_adc_lp_fields)];
+    DevlinkSerialValue adc_values[count_of(g_control_testing_adc_fields)];
+    DevlinkSerialValue adc_avg_values[count_of(g_control_testing_adc_avg_fields)];
+    DevlinkSerialValue adc_lp_values[count_of(g_control_testing_adc_lp_fields)];
     DevlinkSerialValue angle_avg_values[count_of(g_control_testing_angle_avg_fields)];
     DevlinkSerialValue angle_lp_values[count_of(g_control_testing_angle_lp_fields)];
     DevlinkSerialValue motor_values[count_of(g_control_testing_motor_fields)];
+    DevlinkSerialValue hold_values[count_of(g_control_testing_hold_fields)];
 
     hard_assert(app != NULL);
 
-    values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_raw);
-    devlink_serial_print_sample(
-        &g_control_testing_device,
-        &g_control_testing_streams[0],
-        app->adc_raw_sample_seq++,
-        sample_time_us,
-        values
-    );
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        const Servo *servo = &app->servos[servo_index];
+        float actual_deg = control_testing_deg_tenths_to_f32(servo->telemetry.angle_lp_deg_tenths);
 
-    avg_values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_avg_raw);
-    devlink_serial_print_sample(
-        &g_control_testing_device,
-        &g_control_testing_streams[1],
-        app->adc_avg_sample_seq++,
-        sample_time_us,
-        avg_values
-    );
-
-    lp_values[0] = DEVLINK_SERIAL_VALUE_U16(app->adc_lp_raw);
-    devlink_serial_print_sample(
-        &g_control_testing_device,
-        &g_control_testing_streams[2],
-        app->adc_lp_sample_seq++,
-        sample_time_us,
-        lp_values
-    );
-
-    if (control_testing_should_emit_angle_avg(app)) {
-        angle_avg_values[0] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(app->angle_avg_deg_tenths)
+        adc_values[servo_index] = DEVLINK_SERIAL_VALUE_U16(servo->telemetry.adc_raw);
+        adc_avg_values[servo_index] = DEVLINK_SERIAL_VALUE_U16(servo->telemetry.adc_avg_raw);
+        adc_lp_values[servo_index] = DEVLINK_SERIAL_VALUE_U16(servo->telemetry.adc_lp_raw);
+        angle_avg_values[servo_index] = DEVLINK_SERIAL_VALUE_F32(
+            control_testing_deg_tenths_to_f32(servo->telemetry.angle_avg_deg_tenths)
         );
-        devlink_serial_print_sample(
-            &g_control_testing_device,
-            &g_control_testing_streams[3],
-            app->adc_angle_avg_sample_seq++,
-            sample_time_us,
-            angle_avg_values
+        angle_lp_values[servo_index] = DEVLINK_SERIAL_VALUE_F32(actual_deg);
+        motor_values[servo_index * 2u] = DEVLINK_SERIAL_VALUE_U8(servo->telemetry.motor_state);
+        motor_values[(servo_index * 2u) + 1u] = DEVLINK_SERIAL_VALUE_U8(servo->telemetry.motor_drive_pct);
+        hold_values[servo_index * 4u] = DEVLINK_SERIAL_VALUE_F32(servo->settings.hold_target_deg);
+        hold_values[(servo_index * 4u) + 1u] = DEVLINK_SERIAL_VALUE_F32(actual_deg);
+        hold_values[(servo_index * 4u) + 2u] = DEVLINK_SERIAL_VALUE_F32(
+            servo->settings.hold_target_deg - actual_deg
         );
+        hold_values[(servo_index * 4u) + 3u] = DEVLINK_SERIAL_VALUE_I16(servo->telemetry.hold_output_pct);
     }
 
-    if (control_testing_should_emit_angle_lp(app)) {
-        angle_lp_values[0] = DEVLINK_SERIAL_VALUE_F32(
-            control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths)
-        );
-        devlink_serial_print_sample(
-            &g_control_testing_device,
-            &g_control_testing_streams[4],
-            app->adc_angle_lp_sample_seq++,
-            sample_time_us,
-            angle_lp_values
-        );
-    }
-
-    motor_values[0] = DEVLINK_SERIAL_VALUE_U8(app->motor_state);
-    motor_values[1] = DEVLINK_SERIAL_VALUE_U8(app->motor_drive_pct);
     devlink_serial_print_sample(
         &g_control_testing_device,
-        &g_control_testing_streams[5],
-        app->motor_sample_seq++,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_ADC],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_ADC]++,
+        sample_time_us,
+        adc_values
+    );
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_ADC_AVG],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_ADC_AVG]++,
+        sample_time_us,
+        adc_avg_values
+    );
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_ADC_LP],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_ADC_LP]++,
+        sample_time_us,
+        adc_lp_values
+    );
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_ANGLE_AVG],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_ANGLE_AVG]++,
+        sample_time_us,
+        angle_avg_values
+    );
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_ANGLE_LP],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_ANGLE_LP]++,
+        sample_time_us,
+        angle_lp_values
+    );
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_MOTOR],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_MOTOR]++,
         sample_time_us,
         motor_values
     );
-
-    if (app->control_mode == CONTROL_MODE_HOLD) {
-        DevlinkSerialValue hold_values[count_of(g_control_testing_hold_fields)];
-        float actual_deg = control_testing_deg_tenths_to_f32(app->angle_lp_deg_tenths);
-
-        hold_values[0] = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg);
-        hold_values[1] = DEVLINK_SERIAL_VALUE_F32(actual_deg);
-        hold_values[2] = DEVLINK_SERIAL_VALUE_F32(app->hold_target_deg - actual_deg);
-        hold_values[3] = DEVLINK_SERIAL_VALUE_I16(app->hold_output_pct);
-        devlink_serial_print_sample(
-            &g_control_testing_device,
-            &g_control_testing_streams[6],
-            app->hold_sample_seq++,
-            sample_time_us,
-            hold_values
-        );
-    }
+    devlink_serial_print_sample(
+        &g_control_testing_device,
+        &g_control_testing_streams[CONTROL_TESTING_STREAM_HOLD],
+        app->stream_sample_seq[CONTROL_TESTING_STREAM_HOLD]++,
+        sample_time_us,
+        hold_values
+    );
 }
 
 static bool control_testing_pid_callback(repeating_timer_t *rt) {
@@ -780,10 +663,6 @@ static void control_testing_tick(ControlTestingApp *app) {
     }
 }
 
-// Devlink Command Input
-// reads bytes from the PIO UART, assembles them into lines, and hands complete lines
-// to devlink for parsing. devlink matches the JSON command to a param get/set or custom
-// command and calls our callbacks. also handles idle-flush for partial lines.
 static void control_testing_poll_commands(
     PioUartRx *command_rx,
     DevlinkSerialLineBuffer *line_buffer,
@@ -828,24 +707,18 @@ static void control_testing_poll_commands(
     }
 }
 
-// Main
 int main(void) {
-    // create runtime objects and buffers
     PioUartRx command_rx = {0};
     ControlTestingApp app = {0};
     DevlinkSerialLineBuffer command_buffer = {0};
     char command_storage[COMMAND_BUFFER_LEN] = {0};
     char command_line[COMMAND_BUFFER_LEN] = {0};
 
-    // start stdio over UART
     stdio_init_all();
     sleep_ms(200u);
 
-    // init the LED
-    // also init adc_c, motor_c, and sample timing
     control_testing_init(&app);
 
-    // start the PIO UART receiver
     if (!pio_uart_rx_init(&command_rx, pio0, COMMAND_RX_GPIO, COMMAND_BAUD)) {
         devlink_serial_print_log(&g_control_testing_device, "error", "pio rx init failed");
         while (true) {
@@ -853,7 +726,6 @@ int main(void) {
         }
     }
 
-    // initialize the line buffer
     devlink_serial_line_buffer_init(
         &command_buffer,
         command_storage,
@@ -861,12 +733,10 @@ int main(void) {
         COMMAND_IDLE_FLUSH_MS
     );
 
-    // sends devlink discovery messages
     devlink_serial_print_discovery(&g_control_testing_device);
     devlink_serial_print_log(&g_control_testing_device, "info", "control_testing ready");
     devlink_serial_print_event(&g_control_testing_device, "device.ready", "info");
 
-    // main loop
     while (true) {
         control_testing_poll_commands(
             &command_rx,
