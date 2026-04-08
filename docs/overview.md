@@ -1,3 +1,5 @@
+OUTDATED
+
 # Hexapod Robot — Overview
 
 Concise summary of the project scope and near-term plan for the hexapod robot.

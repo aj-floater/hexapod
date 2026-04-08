@@ -2376,6 +2376,29 @@
     <bcf:datasource type="file" datatype="bibtex" glob="false">references.bib</bcf:datasource>
   </bcf:bibdata>
   <bcf:section number="0">
+    <bcf:citekey order="1" intorder="1">raibert1986</bcf:citekey>
+    <bcf:citekey order="2" intorder="1">murphy2004disaster</bcf:citekey>
+    <bcf:citekey order="3" intorder="1">full1999templates</bcf:citekey>
+    <bcf:citekey order="4" intorder="1">saranli2001rhex</bcf:citekey>
+    <bcf:citekey order="5" intorder="1">howtomechatronics2017hexapod</bcf:citekey>
+    <bcf:citekey order="6" intorder="1">howtomechatronics2017hexapod</bcf:citekey>
+    <bcf:citekey order="7" intorder="1">barragan2018minirhex</bcf:citekey>
+    <bcf:citekey order="8" intorder="1">barragan2018minirhex</bcf:citekey>
+    <bcf:citekey order="9" intorder="1">barragan2018minirhex</bcf:citekey>
+    <bcf:citekey order="10" intorder="1">barragan2018minirhex</bcf:citekey>
+    <bcf:citekey order="11" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="12" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="13" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="14" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="15" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="16" intorder="1">steindl2020bruce</bcf:citekey>
+    <bcf:citekey order="17" intorder="1">rasic2020braccio</bcf:citekey>
+    <bcf:citekey order="18" intorder="1">openservo2018</bcf:citekey>
+    <bcf:citekey order="19" intorder="1">dtuinspectionrobot</bcf:citekey>
+    <bcf:citekey order="20" intorder="1">backstrom2020servoarm</bcf:citekey>
+    <bcf:citekey order="21" intorder="1">backstrom2020servoarm</bcf:citekey>
+    <bcf:citekey order="22" intorder="1">stedman2014moti</bcf:citekey>
+    <bcf:citekey order="22" intorder="2">provatos2020openservocan</bcf:citekey>
   </bcf:section>
   <!-- SORTING TEMPLATES -->
   <bcf:sortingtemplate name="none">

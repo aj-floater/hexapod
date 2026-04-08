@@ -1,0 +1,302 @@
+% $ biblatex auxiliary file $
+% $ biblatex bbl format version 3.3 $
+% Do not modify the above lines!
+%
+% This is an auxiliary file used by the 'biblatex' package.
+% This file may safely be deleted. It will be recreated by
+% biber as required.
+%
+\begingroup
+\makeatletter
+\@ifundefined{ver@biblatex.sty}
+  {\@latex@error
+     {Missing 'biblatex' package}
+     {The bibliography requires the 'biblatex' package.}
+      \aftergroup\endinput}
+  {}
+\endgroup
+
+
+\refsection{0}
+  \datalist[entry]{none/global//global/global/global}
+    \entry{raibert1986}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=e3a6d1fa7658c92031b383b683d5d6d8}{%
+           family={Raibert},
+           familyi={R\bibinitperiod},
+           given={Marc\bibnamedelima H.},
+           giveni={M\bibinitperiod\bibinitdelim H\bibinitperiod}}}%
+      }
+      \strng{namehash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{fullhash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{fullhashraw}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{bibnamehash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{authorbibnamehash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{authornamehash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{authorfullhash}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \strng{authorfullhashraw}{e3a6d1fa7658c92031b383b683d5d6d8}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{Communications of the ACM}
+      \field{month}{6}
+      \field{number}{6}
+      \field{title}{Legged Robots}
+      \field{volume}{29}
+      \field{year}{1986}
+      \field{pages}{499\bibrangedash 514}
+      \range{pages}{16}
+    \endentry
+    \entry{murphy2004disaster}{article}{}{}
+      \name{author}{1}{}{%
+        {{hash=f8af99d8c09e5149ad6299e4de8c210e}{%
+           family={Murphy},
+           familyi={M\bibinitperiod},
+           given={Robin\bibnamedelima R.},
+           giveni={R\bibinitperiod\bibinitdelim R\bibinitperiod}}}%
+      }
+      \strng{namehash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{fullhash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{fullhashraw}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{bibnamehash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{authorbibnamehash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{authornamehash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{authorfullhash}{f8af99d8c09e5149ad6299e4de8c210e}
+      \strng{authorfullhashraw}{f8af99d8c09e5149ad6299e4de8c210e}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{IEEE Transactions on Systems, Man, and Cybernetics, Part C: Applications and Reviews}
+      \field{number}{2}
+      \field{title}{Human--Robot Interaction in Rescue Robotics}
+      \field{volume}{34}
+      \field{year}{2004}
+      \field{pages}{138\bibrangedash 153}
+      \range{pages}{16}
+      \verb{doi}
+      \verb 10.1109/TSMCC.2004.826267
+      \endverb
+    \endentry
+    \entry{full1999templates}{article}{}{}
+      \name{author}{2}{}{%
+        {{hash=8609d697a38f7393aa59b34d8f88ad50}{%
+           family={Full},
+           familyi={F\bibinitperiod},
+           given={Robert\bibnamedelima J.},
+           giveni={R\bibinitperiod\bibinitdelim J\bibinitperiod}}}%
+        {{hash=d8a4f4bd8ff47ecd0039e2c4508bb07b}{%
+           family={Koditschek},
+           familyi={K\bibinitperiod},
+           given={Daniel\bibnamedelima E.},
+           giveni={D\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+      }
+      \strng{namehash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{fullhash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{fullhashraw}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{bibnamehash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{authorbibnamehash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{authornamehash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{authorfullhash}{d2e466c6cf4d96a12205226b1e835b01}
+      \strng{authorfullhashraw}{d2e466c6cf4d96a12205226b1e835b01}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{The Journal of Experimental Biology}
+      \field{number}{23}
+      \field{title}{Templates and Anchors: Neuromechanical Hypotheses of Legged Locomotion on Land}
+      \field{volume}{202}
+      \field{year}{1999}
+      \field{pages}{3325\bibrangedash 3332}
+      \range{pages}{8}
+    \endentry
+    \entry{saranli2001rhex}{article}{}{}
+      \name{author}{3}{}{%
+        {{hash=3efbd949a0f984be3942de236ffa3805}{%
+           family={Saranli},
+           familyi={S\bibinitperiod},
+           given={Uluç},
+           giveni={U\bibinitperiod}}}%
+        {{hash=ef680d21db3be3bc2537bae0ed526f09}{%
+           family={Buehler},
+           familyi={B\bibinitperiod},
+           given={Martin},
+           giveni={M\bibinitperiod}}}%
+        {{hash=d8a4f4bd8ff47ecd0039e2c4508bb07b}{%
+           family={Koditschek},
+           familyi={K\bibinitperiod},
+           given={Daniel\bibnamedelima E.},
+           giveni={D\bibinitperiod\bibinitdelim E\bibinitperiod}}}%
+      }
+      \strng{namehash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{fullhash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{fullhashraw}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{bibnamehash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{authorbibnamehash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{authornamehash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{authorfullhash}{04e6d580bab50e34aa27415e1cd4b26d}
+      \strng{authorfullhashraw}{04e6d580bab50e34aa27415e1cd4b26d}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{The International Journal of Robotics Research}
+      \field{number}{7}
+      \field{title}{{RHex}: A Simple and Highly Mobile Hexapod Robot}
+      \field{volume}{20}
+      \field{year}{2001}
+      \field{pages}{616\bibrangedash 631}
+      \range{pages}{16}
+      \verb{doi}
+      \verb 10.1177/02783640122067570
+      \endverb
+    \endentry
+    \entry{howtomechatronics2017hexapod}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=fdff6b39dbc660ff00491589493b9525}{%
+           family={Dejan},
+           familyi={D\bibinitperiod}}}%
+      }
+      \strng{namehash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{fullhash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{fullhashraw}{fdff6b39dbc660ff00491589493b9525}
+      \strng{bibnamehash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{authorbibnamehash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{authornamehash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{authorfullhash}{fdff6b39dbc660ff00491589493b9525}
+      \strng{authorfullhashraw}{fdff6b39dbc660ff00491589493b9525}
+      \field{sortinit}{5}
+      \field{sortinithash}{20e9b4b0b173788c5dace24730f47d8c}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Arduino Ant / Hexapod Robot}
+      \field{urlday}{4}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2017}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://howtomechatronics.com/projects/arduino-ant-hexapod-robot/
+      \endverb
+      \verb{url}
+      \verb https://howtomechatronics.com/projects/arduino-ant-hexapod-robot/
+      \endverb
+    \endentry
+    \entry{barragan2018minirhex}{inproceedings}{}{}
+      \name{author}{3}{}{%
+        {{hash=18a9ef0da97711a575de03e7610c1650}{%
+           family={Barragan},
+           familyi={B\bibinitperiod},
+           given={Monica},
+           giveni={M\bibinitperiod}}}%
+        {{hash=17198cf17b7d9e2b829163e5d8cd5f81}{%
+           family={Flowers},
+           familyi={F\bibinitperiod},
+           given={Nikolai},
+           giveni={N\bibinitperiod}}}%
+        {{hash=90206c754e3402f71db6bbd6c665a82e}{%
+           family={Johnson},
+           familyi={J\bibinitperiod},
+           given={Aaron\bibnamedelima M.},
+           giveni={A\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+      }
+      \list{location}{1}{%
+        {Pittsburgh, PA}%
+      }
+      \strng{namehash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{fullhash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{fullhashraw}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{bibnamehash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{authorbibnamehash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{authornamehash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{authorfullhash}{235acf26fc0515c07588b9b0034f5f5e}
+      \strng{authorfullhashraw}{235acf26fc0515c07588b9b0034f5f5e}
+      \field{sortinit}{7}
+      \field{sortinithash}{108d0be1b1bee9773a1173443802c0a3}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{booktitle}{Robotics: Science and Systems Workshop on Design and Control of Small Legged Robots}
+      \field{month}{6}
+      \field{title}{{MiniRHex}: A Small, Open-source, Fully Programmable Walking Hexapod}
+      \field{urlday}{6}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2018}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://robomechanics.github.io/MiniRHex/
+      \endverb
+      \verb{url}
+      \verb https://robomechanics.github.io/MiniRHex/
+      \endverb
+    \endentry
+    \entry{steindl2020bruce}{article}{}{}
+      \name{author}{7}{}{%
+        {{hash=d8467cb2f1f0d6273fd87b9dbc0e272d}{%
+           family={Steindl},
+           familyi={S\bibinitperiod},
+           given={Ryan},
+           giveni={R\bibinitperiod}}}%
+        {{hash=df85de5b6f46e80fd58802f3145926b4}{%
+           family={Molnar},
+           familyi={M\bibinitperiod},
+           given={Thomas},
+           giveni={T\bibinitperiod}}}%
+        {{hash=3d076c9ad44b8fffd20af4044caf1e7e}{%
+           family={Talbot},
+           familyi={T\bibinitperiod},
+           given={Fletcher},
+           giveni={F\bibinitperiod}}}%
+        {{hash=c444b0244bf1277d2a0c4b1df948d4d7}{%
+           family={Hudson},
+           familyi={H\bibinitperiod},
+           given={Nicolas},
+           giveni={N\bibinitperiod}}}%
+        {{hash=927c305a73c1214eb40809373954218b}{%
+           family={Tam},
+           familyi={T\bibinitperiod},
+           given={Benjamin},
+           giveni={B\bibinitperiod}}}%
+        {{hash=8435c76653f4d9926854d8a20049e98f}{%
+           family={Murrell},
+           familyi={M\bibinitperiod},
+           given={Simon},
+           giveni={S\bibinitperiod}}}%
+        {{hash=8ec4a1465c2b87599b51eda8e26a8075}{%
+           family={Kottege},
+           familyi={K\bibinitperiod},
+           given={Navinda},
+           giveni={N\bibinitperiod}}}%
+      }
+      \strng{namehash}{0ebfc25db422bad89b8248f9a6f15e8d}
+      \strng{fullhash}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
+      \strng{fullhashraw}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
+      \strng{bibnamehash}{1e68856ba605f076b62ecb94ea0d473b}
+      \strng{authorbibnamehash}{1e68856ba605f076b62ecb94ea0d473b}
+      \strng{authornamehash}{0ebfc25db422bad89b8248f9a6f15e8d}
+      \strng{authorfullhash}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
+      \strng{authorfullhashraw}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{journaltitle}{arXiv preprint arXiv:2011.00523}
+      \field{title}{Bruce --- Design and Development of a Dynamic Hexapod Robot}
+      \field{urlday}{6}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2020}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://arxiv.org/abs/2011.00523
+      \endverb
+      \verb{url}
+      \verb https://arxiv.org/abs/2011.00523
+      \endverb
+    \endentry
+  \enddatalist
+\endrefsection
+\endinput
+

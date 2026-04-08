@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from argparse import Namespace
 
 
 def run_gui(args: Namespace) -> int:
+    os.environ.setdefault("QT_SCALE_FACTOR", "0.7")
+
     try:
         import pyqtgraph as pg
         from PySide6 import QtCore, QtWidgets
