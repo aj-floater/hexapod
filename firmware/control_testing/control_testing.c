@@ -336,6 +336,7 @@ static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .param_setter = control_testing_param_set,
 };
 
+// Returns one mutable servo slot.
 static Servo *control_testing_get_servo(ControlTestingApp *app, uint8_t servo_index) {
     hard_assert(app != NULL);
 
@@ -345,6 +346,7 @@ static Servo *control_testing_get_servo(ControlTestingApp *app, uint8_t servo_in
     return &app->servos[servo_index];
 }
 
+// Returns one read-only servo slot.
 static const Servo *control_testing_get_servo_const(
     const ControlTestingApp *app,
     uint8_t servo_index
@@ -357,6 +359,7 @@ static const Servo *control_testing_get_servo_const(
     return &app->servos[servo_index];
 }
 
+// Decodes a servo parameter token.
 static bool control_testing_decode_servo_user_data(
     uintptr_t user_data,
     uint8_t *out_servo_index,
@@ -384,11 +387,13 @@ static bool control_testing_decode_servo_user_data(
     return true;
 }
 
+// Updates the status LED output.
 static void control_testing_apply_status_led(const ControlTestingApp *app) {
     hard_assert(app != NULL);
     gpio_put(PICO_DEFAULT_LED_PIN, app->status_led_on);
 }
 
+// Initializes app state and timers.
 static void control_testing_init(ControlTestingApp *app) {
     absolute_time_t now = get_absolute_time();
     bool pid_timer_registered = false;
@@ -418,10 +423,12 @@ static void control_testing_init(ControlTestingApp *app) {
     hard_assert(pid_timer_registered);
 }
 
+// Converts angle tenths to float degrees.
 static float control_testing_deg_tenths_to_f32(uint16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
 }
 
+// Returns the current parameter value.
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -484,6 +491,7 @@ static bool control_testing_param_get(
     }
 }
 
+// Applies a parameter update.
 static bool control_testing_param_set(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -557,6 +565,7 @@ static bool control_testing_param_set(
     }
 }
 
+// Ticks all servos once.
 static void control_testing_pid_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
 
@@ -565,6 +574,7 @@ static void control_testing_pid_tick(ControlTestingApp *app) {
     }
 }
 
+// Emits one grouped telemetry frame.
 static void control_testing_emit_telemetry(ControlTestingApp *app) {
     uint64_t sample_time_us = time_us_64();
     DevlinkSerialValue adc_values[count_of(g_control_testing_adc_fields)];
@@ -649,11 +659,13 @@ static void control_testing_emit_telemetry(ControlTestingApp *app) {
     );
 }
 
+// Dispatches one timer interrupt tick.
 static bool control_testing_pid_callback(repeating_timer_t *rt) {
     control_testing_pid_tick((ControlTestingApp *)rt->user_data);
     return true;
 }
 
+// Emits telemetry when its deadline expires.
 static void control_testing_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
 
@@ -663,6 +675,7 @@ static void control_testing_tick(ControlTestingApp *app) {
     }
 }
 
+// Processes pending devlink command bytes.
 static void control_testing_poll_commands(
     PioUartRx *command_rx,
     DevlinkSerialLineBuffer *line_buffer,
@@ -707,6 +720,7 @@ static void control_testing_poll_commands(
     }
 }
 
+// Starts the control testing firmware.
 int main(void) {
     PioUartRx command_rx = {0};
     ControlTestingApp app = {0};

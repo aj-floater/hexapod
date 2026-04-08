@@ -8,6 +8,7 @@
 #define SERVO_ADC_MAX_DEG 180u
 #define SERVO_MOTOR_PWM_HZ 20000u
 
+// Clamps raw ADC values to the usable range.
 static uint16_t servo_bound_adc_raw(uint16_t raw_value) {
     if (raw_value < SERVO_ADC_RAW_MIN) {
         return SERVO_ADC_RAW_MIN;
@@ -18,10 +19,12 @@ static uint16_t servo_bound_adc_raw(uint16_t raw_value) {
     return raw_value;
 }
 
+// Converts tenths of degrees to float degrees.
 static float servo_deg_tenths_to_f32(uint16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
 }
 
+// Converts one ADC sample into angle tenths.
 static uint16_t servo_adc_raw_to_deg_tenths(
     const Servo *servo,
     uint16_t raw_value
@@ -66,6 +69,7 @@ static uint16_t servo_adc_raw_to_deg_tenths(
     return (uint16_t)(SERVO_ADC_MAX_DEG * SERVO_TENTHS_PER_DEG);
 }
 
+// Updates the low-pass ADC sample.
 static uint16_t servo_update_adc_lp(Servo *servo, uint16_t avg_raw_value) {
     uint32_t filtered_raw = 0u;
     uint32_t previous_weight = 0u;
@@ -88,6 +92,7 @@ static uint16_t servo_update_adc_lp(Servo *servo, uint16_t avg_raw_value) {
     return servo->telemetry.adc_lp_raw;
 }
 
+// Applies the cached motor command.
 static void servo_apply_output(Servo *servo) {
     hard_assert(servo != NULL);
 
@@ -108,6 +113,7 @@ static void servo_apply_output(Servo *servo) {
     }
 }
 
+// Initializes one servo runtime object.
 void servo_init(
     Servo *servo,
     const ServoConfig *config
@@ -147,6 +153,7 @@ void servo_init(
     servo_apply_output(servo);
 }
 
+// Changes the servo control mode.
 void servo_set_control_mode(Servo *servo, uint8_t mode) {
     hard_assert(servo != NULL);
 
@@ -161,6 +168,7 @@ void servo_set_control_mode(Servo *servo, uint8_t mode) {
     }
 }
 
+// Updates the manual motor state.
 void servo_set_motor_state(Servo *servo, uint8_t state) {
     hard_assert(servo != NULL);
 
@@ -168,6 +176,7 @@ void servo_set_motor_state(Servo *servo, uint8_t state) {
     servo_apply_output(servo);
 }
 
+// Updates the manual motor duty.
 void servo_set_motor_drive_pct(Servo *servo, uint8_t pct) {
     hard_assert(servo != NULL);
 
@@ -175,6 +184,7 @@ void servo_set_motor_drive_pct(Servo *servo, uint8_t pct) {
     servo_apply_output(servo);
 }
 
+// Runs one servo control cycle.
 void servo_tick(Servo *servo) {
     hard_assert(servo != NULL);
 

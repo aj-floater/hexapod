@@ -6,8 +6,7 @@
 #define MOTOR_STATE_FORWARD 2u
 #define MOTOR_STATE_REVERSE 3u
 
-// Functions
-// runs the PID controller and returns the motor command
+// Computes one PID motor command.
 PositionHoldResult position_hold_update(
     float target_deg,
     float measured_deg,
