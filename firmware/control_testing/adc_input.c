@@ -3,11 +3,12 @@
 #include "hardware/adc.h"
 #include "pico/stdlib.h"
 
-// Setup
+// Initializes the ADC peripheral.
 void adc_input_system_init(void) {
     adc_init();
 }
 
+// Configures one ADC input pin.
 void adc_input_init(AdcInput *adc_input, uint gpio) {
     hard_assert(adc_input != NULL);
     hard_assert(gpio >= 26u && gpio <= 28u);
@@ -18,7 +19,7 @@ void adc_input_init(AdcInput *adc_input, uint gpio) {
     adc_gpio_init(gpio);
 }
 
-// Reads
+// Reads one raw ADC sample.
 uint16_t adc_input_read_raw(AdcInput *adc_input) {
     hard_assert(adc_input != NULL);
 
@@ -26,7 +27,7 @@ uint16_t adc_input_read_raw(AdcInput *adc_input) {
     return adc_read();
 }
 
-// Average Reads
+// Returns a rounded average sample.
 uint16_t adc_input_read_average_raw(AdcInput *adc_input, uint sample_count) {
     uint32_t sum = 0u;
 

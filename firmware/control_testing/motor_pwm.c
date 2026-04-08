@@ -7,7 +7,7 @@
 // Constants
 #define MOTOR_PWM_WRAP_DEFAULT 999u
 
-// Helpers
+// Clamps duty to a valid percentage.
 static uint8_t motor_pwm_bound_duty(uint8_t duty_percent) {
     if (duty_percent > 100u) {
         return 100u;
@@ -16,12 +16,13 @@ static uint8_t motor_pwm_bound_duty(uint8_t duty_percent) {
     return duty_percent;
 }
 
+// Converts duty percent into a PWM level.
 static uint16_t motor_pwm_duty_to_level(const MotorPwm *motor, uint8_t duty_percent) {
     uint8_t bounded_duty = motor_pwm_bound_duty(duty_percent);
     return (uint16_t)(((uint32_t)bounded_duty * motor->wrap) / 100u);
 }
 
-// Setup
+// Configures one H-bridge PWM pair.
 void motor_pwm_init(
     MotorPwm *motor,
     const char *name,
@@ -76,7 +77,7 @@ void motor_pwm_init(
     motor_pwm_coast(motor);
 }
 
-// Stop
+// Releases both motor outputs.
 void motor_pwm_coast(MotorPwm *motor) {
     hard_assert(motor != NULL);
 
@@ -84,6 +85,7 @@ void motor_pwm_coast(MotorPwm *motor) {
     pwm_set_gpio_level(motor->in2_gpio, 0u);
 }
 
+// Actively brakes the motor.
 void motor_pwm_brake(MotorPwm *motor) {
     uint16_t high_level = 0u;
 
@@ -94,7 +96,7 @@ void motor_pwm_brake(MotorPwm *motor) {
     pwm_set_gpio_level(motor->in2_gpio, high_level);
 }
 
-// Drive
+// Drives the motor forward.
 void motor_pwm_set_forward_duty(MotorPwm *motor, uint8_t duty_percent) {
     hard_assert(motor != NULL);
 
@@ -102,6 +104,7 @@ void motor_pwm_set_forward_duty(MotorPwm *motor, uint8_t duty_percent) {
     pwm_set_gpio_level(motor->in2_gpio, motor_pwm_duty_to_level(motor, duty_percent));
 }
 
+// Drives the motor in reverse.
 void motor_pwm_set_reverse_duty(MotorPwm *motor, uint8_t duty_percent) {
     hard_assert(motor != NULL);
 
