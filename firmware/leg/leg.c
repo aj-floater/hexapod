@@ -6,22 +6,10 @@
 
 #include "adc_pot.h"
 #include "devlink_serial.h"
+#include "leg_pins.h"
 #include "motor_pwm.h"
 #include "pio_uart_rx.h"
 #include "telemetry.h"
-
-// Potentiometer ADC mapping (servo angle feedback).
-#define POT_A_GPIO 26
-#define POT_B_GPIO 27
-#define POT_C_GPIO 28
-
-// DRV8837 IN1/IN2 mapping.
-#define MOTOR_A_IN1_GPIO 18
-#define MOTOR_A_IN2_GPIO 19
-#define MOTOR_B_IN1_GPIO 12
-#define MOTOR_B_IN2_GPIO 13
-#define MOTOR_C_IN1_GPIO 22
-#define MOTOR_C_IN2_GPIO 23
 
 #define MOTOR_PWM_HZ 20000u
 #define POSITION_CONTROLLER_UPDATE_MS 5u
@@ -208,15 +196,15 @@ static const DevlinkSerialDeviceDescriptor g_leg_device = {
 
 static void init_adc_bank(AdcBank *bank) {
     adc_pot_system_init();
-    adc_pot_init(&bank->a, "adc_a", POT_A_GPIO);
-    adc_pot_init(&bank->b, "adc_b", POT_B_GPIO);
-    adc_pot_init(&bank->c, "adc_c", POT_C_GPIO);
+    adc_pot_init(&bank->a, "adc_a", LEG_POT_A_GPIO);
+    adc_pot_init(&bank->b, "adc_b", LEG_POT_B_GPIO);
+    adc_pot_init(&bank->c, "adc_c", LEG_POT_C_GPIO);
 }
 
 static void init_motor_bank(MotorBank *bank) {
-    motor_pwm_init(&bank->a, "motor_a", MOTOR_A_IN1_GPIO, MOTOR_A_IN2_GPIO, MOTOR_PWM_HZ);
-    motor_pwm_init(&bank->b, "motor_b", MOTOR_B_IN1_GPIO, MOTOR_B_IN2_GPIO, MOTOR_PWM_HZ);
-    motor_pwm_init(&bank->c, "motor_c", MOTOR_C_IN1_GPIO, MOTOR_C_IN2_GPIO, MOTOR_PWM_HZ);
+    motor_pwm_init(&bank->a, "motor_a", LEG_MOTOR_A_IN1_GPIO, LEG_MOTOR_A_IN2_GPIO, MOTOR_PWM_HZ);
+    motor_pwm_init(&bank->b, "motor_b", LEG_MOTOR_B_IN1_GPIO, LEG_MOTOR_B_IN2_GPIO, MOTOR_PWM_HZ);
+    motor_pwm_init(&bank->c, "motor_c", LEG_MOTOR_C_IN1_GPIO, LEG_MOTOR_C_IN2_GPIO, MOTOR_PWM_HZ);
 
     motor_pwm_coast(&bank->a);
     motor_pwm_coast(&bank->b);
