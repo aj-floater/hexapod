@@ -17,12 +17,227 @@ from ..messages import (
 )
 from .controller import ConnectionConfig, GuiController
 from .plot_workspace import PlotWorkspaceWidget
-from .workspace import PlotWorkspace, WindowLayout, WindowLayoutStore, WorkspaceStore, default_trace_color
+from .workspace import (
+    DEFAULT_PRESET_NAME,
+    PlotWorkspace,
+    WindowLayout,
+    WindowLayoutStore,
+    WorkspacePreset,
+    WorkspacePresetCollection,
+    WorkspaceStore,
+    blank_workspace,
+    default_trace_color,
+)
 
 PARAM_APPLY_TIMEOUT_MS = 5000
 PARAM_APPLY_MAX_ATTEMPTS = 3
 LIVE_REFRESH_INTERVAL_MS = 33
 RAW_VIEW_REFRESH_INTERVAL_MS = 100
+
+PRESET_TAB_ACTIVE_STYLESHEET = """
+QPushButton {
+    background-color: #1f2530;
+    color: #eef3fb;
+    border: 1px solid #466481;
+    border-radius: 5px;
+    padding: 5px 12px;
+}
+QPushButton:hover {
+    background-color: #262e3b;
+    border-color: #5c82a6;
+}
+"""
+
+PRESET_TAB_INACTIVE_STYLESHEET = """
+QPushButton {
+    background-color: #343b47;
+    color: #c5cfdd;
+    border: 1px solid #4b5566;
+    border-radius: 5px;
+    padding: 5px 12px;
+}
+QPushButton:hover {
+    background-color: #3c4553;
+    color: #dce6f4;
+    border-color: #607087;
+}
+"""
+
+PRESET_ADD_BUTTON_STYLESHEET = """
+QPushButton {
+    background-color: #2d3440;
+    color: #d6e0ef;
+    border: 1px solid #465062;
+    border-radius: 5px;
+    padding: 0px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QPushButton:hover {
+    background-color: #37404d;
+    border-color: #5b6e87;
+}
+QPushButton:disabled {
+    color: #7f8997;
+    border-color: #3d4450;
+}
+"""
+
+PRESET_RENAME_STYLESHEET = """
+QLineEdit {
+    background-color: #1f2530;
+    color: #eef3fb;
+    border: 1px solid #466481;
+    border-radius: 5px;
+    padding: 5px 10px;
+    selection-background-color: #0b84f3;
+}
+"""
+
+HEADER_ACTION_STYLESHEET = """
+QPushButton {
+    background-color: #3a414d;
+    color: #c6d0dd;
+    border: 1px solid #4d5664;
+    border-radius: 5px;
+    padding: 4px 10px;
+}
+QPushButton:hover {
+    background-color: #444c59;
+    color: #eef3fb;
+    border-color: #657486;
+}
+"""
+
+HEADER_EXPORT_STYLESHEET = """
+QPushButton {
+    background-color: #414957;
+    color: #d6deeb;
+    border: 1px solid #556172;
+    border-radius: 5px;
+    padding: 4px 10px;
+}
+QPushButton:hover {
+    background-color: #4b5564;
+    color: #f0f4fb;
+    border-color: #6c7d92;
+}
+"""
+
+HEADER_REMOVE_STYLESHEET = """
+QPushButton {
+    background-color: #40363b;
+    color: #d3b3bc;
+    border: 1px solid #6d4b56;
+    border-radius: 5px;
+    padding: 4px 10px;
+}
+QPushButton:hover {
+    background-color: #4d3a41;
+    color: #f1d3da;
+    border-color: #8e5d6a;
+}
+"""
+
+POPUP_MENU_STYLESHEET = """
+QMenu {
+    background-color: #1c2128;
+    color: #d7e1ef;
+    border: 1px solid #4b5566;
+    padding: 4px;
+}
+QMenu::item {
+    background-color: transparent;
+    border: none;
+    padding: 6px 12px;
+    margin: 0px;
+}
+QMenu::item:selected {
+    background-color: #b23b50;
+    color: #f7f9fc;
+}
+QMenu::item:disabled {
+    color: #788292;
+    background-color: transparent;
+}
+QMenu::separator {
+    height: 1px;
+    background-color: #475262;
+    margin: 4px 8px;
+}
+"""
+
+PARAM_PICKER_POPUP_STYLESHEET = """
+QFrame {
+    background-color: #1c2128;
+    border: 1px solid #4b5566;
+}
+QListWidget {
+    background-color: transparent;
+    color: #d7e1ef;
+    border: none;
+    outline: none;
+}
+QListWidget::item {
+    border: none;
+    margin: 0px;
+    padding: 6px 12px;
+    background-color: transparent;
+}
+QListWidget::item:hover {
+    background-color: #313946;
+    color: #eef3fb;
+}
+QListWidget::item:selected {
+    background-color: #b23b50;
+    color: #f7f9fc;
+}
+"""
+
+
+class ElidedLabel(QtWidgets.QLabel):
+    def __init__(
+        self,
+        text: str = "",
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        elide_mode: QtCore.Qt.TextElideMode = QtCore.Qt.TextElideMode.ElideMiddle,
+    ) -> None:
+        super().__init__("", parent)
+        self._full_text = ""
+        self._elide_mode = elide_mode
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self.setText(text)
+
+    def text(self) -> str:
+        return self._full_text
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self._update_elided_text()
+
+    def minimumSizeHint(self) -> QtCore.QSize:
+        hint = super().minimumSizeHint()
+        return QtCore.QSize(0, hint.height())
+
+    def setFont(self, font: QtGui.QFont) -> None:
+        super().setFont(font)
+        self._update_elided_text()
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def _update_elided_text(self) -> None:
+        available_width = max(0, self.contentsRect().width())
+        if available_width <= 0:
+            display_text = self._full_text
+        else:
+            display_text = self.fontMetrics().elidedText(self._full_text, self._elide_mode, available_width)
+        super().setText(display_text)
 
 
 class InlineIndicatorButton(QtWidgets.QPushButton):
@@ -95,6 +310,81 @@ class InlineIndicatorButton(QtWidgets.QPushButton):
         painter.drawText(x, baseline, self._suffix)
 
 
+class PresetButton(QtWidgets.QPushButton):
+    double_clicked = QtCore.Signal()
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+
+class ParameterPickerPopup(QtWidgets.QFrame):
+    param_selected = QtCore.Signal(str)
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent, QtCore.Qt.WindowType.Popup | QtCore.Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("paramPickerPopup")
+        self.setStyleSheet(PARAM_PICKER_POPUP_STYLESHEET)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._list = QtWidgets.QListWidget(self)
+        self._list.setSpacing(0)
+        self._list.setAlternatingRowColors(False)
+        self._list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.SingleSelection)
+        self._list.setMouseTracking(True)
+        self._list.itemClicked.connect(self._on_item_clicked)
+        self._list.itemActivated.connect(self._on_item_clicked)
+        layout.addWidget(self._list)
+
+    def populate(self, param_specs: list[ParamSpec], visible_names: set[str]) -> None:
+        self._list.clear()
+        first_enabled_row: int | None = None
+        disabled_color = QtGui.QColor("#788292")
+
+        for index, spec in enumerate(param_specs):
+            item = QtWidgets.QListWidgetItem(spec.name)
+            item.setData(QtCore.Qt.ItemDataRole.UserRole, spec.name)
+            if spec.name in visible_names:
+                item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEnabled & ~QtCore.Qt.ItemFlag.ItemIsSelectable)
+                item.setForeground(disabled_color)
+            elif first_enabled_row is None:
+                first_enabled_row = index
+            self._list.addItem(item)
+
+        if first_enabled_row is not None:
+            self._list.setCurrentRow(first_enabled_row)
+
+    def show_below(self, anchor: QtWidgets.QWidget) -> None:
+        row_height = max(28, self._list.sizeHintForRow(0) if self._list.count() else 28)
+        content_width = max(
+            anchor.width(),
+            self._list.sizeHintForColumn(0) + 32 if self._list.count() else anchor.width(),
+        )
+        width = min(max(content_width, 260), 520)
+        visible_rows = min(max(self._list.count(), 1), 14)
+        height = visible_rows * row_height + 2
+        if self._list.verticalScrollBar().isVisible():
+            width += self._list.verticalScrollBar().sizeHint().width()
+        self.resize(width, height)
+        self.move(anchor.mapToGlobal(QtCore.QPoint(0, anchor.height())))
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._list.setFocus()
+
+    def _on_item_clicked(self, item: QtWidgets.QListWidgetItem) -> None:
+        if item is None or not (item.flags() & QtCore.Qt.ItemFlag.ItemIsEnabled):
+            return
+        param_name = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if isinstance(param_name, str) and param_name:
+            self.param_selected.emit(param_name)
+        self.close()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -111,11 +401,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._selected_device: str | None = None
         self._selected_stream: str | None = None
         self._workspace: PlotWorkspace | None = None
-        self._workspace_loaded_from_store = False
-        self._workspace_user_modified = False
+        self._workspace_presets: WorkspacePresetCollection | None = None
+        self._active_preset_name: str | None = None
+        self._seedable_preset_names: set[str] = set()
+        self._preset_buttons: dict[str, PresetButton] = {}
+        self._preset_button_group: QtWidgets.QButtonGroup | None = None
+        self._preset_rename_editor: QtWidgets.QLineEdit | None = None
+        self._preset_rename_name: str | None = None
+        self._add_param_popup: ParameterPickerPopup | None = None
         self._current_command_specs: list[CommandSpec] = []
+        self._all_param_specs: list[ParamSpec] = []
         self._current_param_specs: list[ParamSpec] = []
-        self._command_widgets: dict[str, tuple[str, QtWidgets.QWidget]] = {}
+        self._command_cards: dict[str, QtWidgets.QFrame] = {}
+        self._command_card_widgets: dict[str, dict[str, tuple[str, QtWidgets.QWidget]]] = {}
+        self._command_card_status_labels: dict[str, QtWidgets.QLabel] = {}
+        self._command_id_to_name: dict[int, str] = {}
         self._param_editors: dict[str, tuple[str, QtWidgets.QWidget]] = {}
         self._param_apply_buttons: dict[str, QtWidgets.QPushButton] = {}
         self._param_cards: dict[str, QtWidgets.QFrame] = {}
@@ -197,10 +497,440 @@ class MainWindow(QtWidgets.QMainWindow):
                 return (workspace, pane, pane.title, default_trace_color(index))
         return (workspace, None, "Trace", "#8b96a5")
 
+    def _style_preset_button(self, button: QtWidgets.QPushButton, *, active: bool) -> None:
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        button.setStyleSheet(PRESET_TAB_ACTIVE_STYLESHEET if active else PRESET_TAB_INACTIVE_STYLESHEET)
+
+    def _style_header_action_button(self, button: QtWidgets.QPushButton, *, variant: str = "neutral") -> None:
+        if variant == "export":
+            button.setStyleSheet(HEADER_EXPORT_STYLESHEET)
+        elif variant == "danger":
+            button.setStyleSheet(HEADER_REMOVE_STYLESHEET)
+        else:
+            button.setStyleSheet(HEADER_ACTION_STYLESHEET)
+        button.setIconSize(QtCore.QSize(14, 14))
+
+    def _workspace_for_preset(self, preset_name: str | None) -> PlotWorkspace | None:
+        if self._workspace_presets is None or preset_name is None:
+            return None
+        for preset in self._workspace_presets.presets:
+            if preset.name == preset_name:
+                return preset.workspace
+        return None
+
+    def _preset_by_name(self, preset_name: str | None) -> WorkspacePreset | None:
+        if self._workspace_presets is None or preset_name is None:
+            return None
+        for preset in self._workspace_presets.presets:
+            if preset.name == preset_name:
+                return preset
+        return None
+
+    def _visible_param_names(self, preset_name: str | None = None) -> tuple[str, ...]:
+        preset = self._preset_by_name(preset_name or self._active_preset_name)
+        if preset is None:
+            return ()
+        return preset.visible_param_names
+
+    def _set_visible_param_names_for_active_preset(self, names: tuple[str, ...]) -> None:
+        if self._workspace_presets is None or self._active_preset_name is None:
+            return
+        presets = tuple(
+            WorkspacePreset(
+                name=preset.name,
+                workspace=preset.workspace,
+                visible_param_names=names if preset.name == self._active_preset_name else preset.visible_param_names,
+            )
+            for preset in self._workspace_presets.presets
+        )
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=presets,
+            active_preset_name=self._workspace_presets.active_preset_name,
+        )
+
+    def _add_visible_param_to_active_preset(self, param_name: str) -> None:
+        visible_names = self._visible_param_names()
+        if param_name in visible_names:
+            return
+        self._set_visible_param_names_for_active_preset(visible_names + (param_name,))
+        self._save_workspace_presets()
+        self._refresh_params_table()
+
+    def _remove_visible_param_from_active_preset(self, param_name: str) -> None:
+        visible_names = self._visible_param_names()
+        if param_name not in visible_names:
+            return
+        self._set_visible_param_names_for_active_preset(tuple(name for name in visible_names if name != param_name))
+        self._save_workspace_presets()
+        self._refresh_params_table()
+
+    def _build_add_param_picker(self) -> ParameterPickerPopup | None:
+        if not self._all_param_specs:
+            return None
+        if self._add_param_popup is None:
+            self._add_param_popup = ParameterPickerPopup(self)
+            self._add_param_popup.param_selected.connect(self._add_visible_param_to_active_preset)
+        self._add_param_popup.populate(self._all_param_specs, set(self._visible_param_names()))
+        return self._add_param_popup
+
+    def _show_add_param_menu(self) -> None:
+        popup = self._build_add_param_picker()
+        if popup is None:
+            return
+        if popup.isVisible():
+            popup.close()
+            return
+        popup.show_below(self._add_param_button)
+
+    def _close_add_param_popup(self) -> None:
+        if self._add_param_popup is not None and self._add_param_popup.isVisible():
+            self._add_param_popup.close()
+
+    def _build_param_card_context_menu(self, param_name: str) -> QtWidgets.QMenu:
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(POPUP_MENU_STYLESHEET)
+        remove_action = menu.addAction("Remove from Preset")
+        remove_action.triggered.connect(lambda: self._remove_visible_param_from_active_preset(param_name))
+        return menu
+
+    def _show_param_card_context_menu(self, param_name: str, global_pos: QtCore.QPoint) -> None:
+        self._build_param_card_context_menu(param_name).exec(global_pos)
+
+    def _set_active_preset_name(self, preset_name: str) -> None:
+        if self._workspace_presets is None:
+            return
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=self._workspace_presets.presets,
+            active_preset_name=preset_name,
+        )
+        self._active_preset_name = preset_name
+
+    def _replace_preset_workspace(self, preset_name: str, workspace: PlotWorkspace) -> None:
+        if self._workspace_presets is None:
+            return
+        presets = tuple(
+            WorkspacePreset(
+                name=preset.name,
+                workspace=workspace if preset.name == preset_name else preset.workspace,
+                visible_param_names=preset.visible_param_names,
+            )
+            for preset in self._workspace_presets.presets
+        )
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=presets,
+            active_preset_name=self._workspace_presets.active_preset_name,
+        )
+        if self._active_preset_name == preset_name:
+            self._workspace = workspace
+
+    def _save_workspace_presets(self) -> None:
+        if self._workspace_presets is None:
+            return
+        try:
+            self._workspace_store.save(self._workspace_presets)
+        except Exception as exc:
+            self._show_status(f"failed to save layout: {exc}", error=True)
+
+    def _refresh_preset_ribbon(self, *, preserve_scroll: bool = True, reveal_active: bool = False) -> None:
+        self._cancel_preset_rename()
+        scroll_bar = self._preset_scroll.horizontalScrollBar()
+        previous_scroll = scroll_bar.value() if preserve_scroll else 0
+
+        while self._preset_button_layout.count():
+            item = self._preset_button_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                if widget is self._new_preset_button:
+                    widget.setParent(None)
+                else:
+                    widget.deleteLater()
+
+        self._preset_buttons = {}
+        self._preset_button_group = QtWidgets.QButtonGroup(self)
+        self._preset_button_group.setExclusive(True)
+
+        if self._workspace_presets is None:
+            self._new_preset_button.setEnabled(False)
+            self._preset_button_layout.addWidget(self._new_preset_button)
+            return
+
+        for preset in self._workspace_presets.presets:
+            button = PresetButton(preset.name)
+            button.setCheckable(True)
+            button.setChecked(preset.name == self._workspace_presets.active_preset_name)
+            self._style_preset_button(button, active=preset.name == self._workspace_presets.active_preset_name)
+            button.clicked.connect(lambda _checked=False, name=preset.name: self._select_preset(name))
+            button.double_clicked.connect(lambda name=preset.name: self._begin_preset_rename(name))
+            button.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda pos, name=preset.name, source=button: self._show_preset_context_menu(
+                    name,
+                    source=source,
+                    global_pos=source.mapToGlobal(pos),
+                )
+            )
+            self._preset_button_group.addButton(button)
+            self._preset_button_layout.addWidget(button)
+            self._preset_buttons[preset.name] = button
+
+        self._new_preset_button.setEnabled(self._selected_device is not None)
+        self._preset_button_layout.addWidget(self._new_preset_button)
+        self._preset_button_layout.addStretch(1)
+        if reveal_active and self._active_preset_name is not None:
+            active_button = self._preset_buttons.get(self._active_preset_name)
+            if active_button is not None:
+                QtCore.QTimer.singleShot(0, lambda: self._preset_scroll.ensureWidgetVisible(active_button, 12, 0))
+                return
+        if preserve_scroll:
+            QtCore.QTimer.singleShot(0, lambda: scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum())))
+
+    def _next_preset_name(self) -> str:
+        names = {preset.name for preset in self._workspace_presets.presets} if self._workspace_presets is not None else set()
+        index = 1
+        while True:
+            candidate = f"Preset {index}"
+            if candidate not in names:
+                return candidate
+            index += 1
+
+    def _clear_preset_rename_editor(self) -> None:
+        if self._preset_rename_editor is None:
+            return
+        self._preset_rename_editor.removeEventFilter(self)
+        self._preset_button_layout.removeWidget(self._preset_rename_editor)
+        self._preset_rename_editor.deleteLater()
+        self._preset_rename_editor = None
+
+    def _cancel_preset_rename(self) -> None:
+        name = self._preset_rename_name
+        self._clear_preset_rename_editor()
+        self._preset_rename_name = None
+        if name is None:
+            return
+        button = self._preset_buttons.get(name)
+        if button is not None:
+            button.show()
+            button.setFocus()
+
+    def _begin_preset_rename(self, preset_name: str) -> None:
+        if preset_name != self._active_preset_name:
+            return
+
+        button = self._preset_buttons.get(preset_name)
+        if button is None:
+            return
+
+        self._cancel_preset_rename()
+        index = self._preset_button_layout.indexOf(button)
+        if index < 0:
+            return
+
+        editor = QtWidgets.QLineEdit(preset_name)
+        editor.installEventFilter(self)
+        editor.setStyleSheet(PRESET_RENAME_STYLESHEET)
+        editor.setMinimumWidth(max(90, editor.fontMetrics().horizontalAdvance(preset_name) + 26))
+        editor.returnPressed.connect(self._finish_preset_rename)
+        editor.editingFinished.connect(self._finish_preset_rename)
+        self._preset_rename_editor = editor
+        self._preset_rename_name = preset_name
+        button.hide()
+        self._preset_button_layout.insertWidget(index, editor)
+        editor.selectAll()
+        editor.setFocus()
+
+    def _rename_preset(self, old_name: str, new_name: str) -> bool:
+        if self._workspace_presets is None:
+            return False
+
+        cleaned_name = new_name.strip()
+        if not cleaned_name:
+            self._show_status("preset name cannot be empty", error=True)
+            return False
+        if cleaned_name != old_name and any(preset.name == cleaned_name for preset in self._workspace_presets.presets):
+            self._show_status(f"preset {cleaned_name} already exists", error=True)
+            return False
+        if cleaned_name == old_name:
+            return True
+
+        presets = tuple(
+            WorkspacePreset(
+                name=cleaned_name if preset.name == old_name else preset.name,
+                workspace=preset.workspace,
+                visible_param_names=preset.visible_param_names,
+            )
+            for preset in self._workspace_presets.presets
+        )
+        active_name = cleaned_name if self._workspace_presets.active_preset_name == old_name else self._workspace_presets.active_preset_name
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=presets,
+            active_preset_name=active_name,
+        )
+        if old_name in self._seedable_preset_names:
+            self._seedable_preset_names.discard(old_name)
+            self._seedable_preset_names.add(cleaned_name)
+        if self._active_preset_name == old_name:
+            self._active_preset_name = cleaned_name
+        self._refresh_preset_ribbon()
+        self._save_workspace_presets()
+        self._show_status(f"renamed preset to {cleaned_name}")
+        return True
+
+    def _finish_preset_rename(self) -> None:
+        editor = self._preset_rename_editor
+        old_name = self._preset_rename_name
+        if editor is None or old_name is None:
+            return
+
+        new_name = editor.text()
+        self._clear_preset_rename_editor()
+        self._preset_rename_name = None
+        button = self._preset_buttons.get(old_name)
+        if button is not None:
+            button.show()
+
+        if not self._rename_preset(old_name, new_name):
+            if button is not None:
+                button.setFocus()
+            return
+
+    def _build_preset_context_menu(self, preset_name: str) -> QtWidgets.QMenu | None:
+        if self._workspace_presets is None:
+            return None
+
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(POPUP_MENU_STYLESHEET)
+        rename_action = menu.addAction("Rename")
+        rename_action.triggered.connect(lambda: self._rename_preset_from_menu(preset_name))
+        delete_action = menu.addAction("Delete")
+        delete_action.setEnabled(len(self._workspace_presets.presets) > 1)
+        delete_action.triggered.connect(lambda: self._delete_preset(preset_name))
+        return menu
+
+    def _show_preset_context_menu(
+        self,
+        preset_name: str,
+        *,
+        source: QtWidgets.QWidget | None = None,
+        global_pos: QtCore.QPoint | None = None,
+    ) -> None:
+        menu = self._build_preset_context_menu(preset_name)
+        if menu is None:
+            return
+        if global_pos is not None:
+            anchor = global_pos
+        elif source is not None:
+            anchor = source.mapToGlobal(QtCore.QPoint(0, source.height()))
+        else:
+            anchor = self._preset_scroll.viewport().mapToGlobal(
+                QtCore.QPoint(0, self._preset_scroll.viewport().height())
+            )
+        menu.exec(anchor)
+
+    def _rename_preset_from_menu(self, preset_name: str) -> None:
+        if preset_name != self._active_preset_name:
+            self._select_preset(preset_name)
+        self._begin_preset_rename(preset_name)
+
+    def _delete_preset(self, preset_name: str) -> None:
+        if self._workspace_presets is None:
+            return
+        if len(self._workspace_presets.presets) <= 1:
+            self._show_status("cannot delete the last preset", error=True)
+            return
+        was_active = preset_name == self._active_preset_name
+
+        presets = list(self._workspace_presets.presets)
+        removed_index = next((index for index, preset in enumerate(presets) if preset.name == preset_name), None)
+        if removed_index is None:
+            return
+
+        if was_active:
+            self._save_workspace_snapshot()
+
+        remaining = [preset for preset in presets if preset.name != preset_name]
+        next_active_name = self._active_preset_name
+        if preset_name == self._active_preset_name:
+            next_index = max(0, min(removed_index - 1, len(remaining) - 1))
+            next_active_name = remaining[next_index].name
+
+        self._seedable_preset_names.discard(preset_name)
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=tuple(remaining),
+            active_preset_name=next_active_name or remaining[0].name,
+        )
+        self._active_preset_name = self._workspace_presets.active_preset_name
+        self._refresh_preset_ribbon()
+
+        if was_active or self._workspace_for_preset(self._active_preset_name) != self._workspace:
+            next_workspace = self._workspace_for_preset(self._active_preset_name)
+            self._workspace = next_workspace
+            self._plot_workspace.set_workspace(next_workspace)
+            self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+
+        self._save_workspace_presets()
+        self._refresh_params_table()
+        self._show_status(f"deleted preset {preset_name}")
+
+    def _create_preset(self) -> None:
+        if self._selected_device is None or self._workspace_presets is None:
+            return
+
+        self._close_add_param_popup()
+        self._save_workspace_snapshot()
+        preset_name = self._next_preset_name()
+        workspace = blank_workspace(self._selected_device)
+        self._workspace_presets = WorkspacePresetCollection(
+            device=self._workspace_presets.device,
+            presets=self._workspace_presets.presets
+            + (WorkspacePreset(name=preset_name, workspace=workspace, visible_param_names=()),),
+            active_preset_name=preset_name,
+        )
+        self._active_preset_name = preset_name
+        self._workspace = workspace
+        self._refresh_preset_ribbon(reveal_active=True)
+        self._plot_workspace.set_workspace(workspace)
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._save_workspace_presets()
+        self._refresh_params_table()
+        self._show_status(f"created preset {preset_name}")
+
+    def _select_preset(self, preset_name: str) -> None:
+        if self._workspace_presets is None or preset_name == self._active_preset_name:
+            return
+
+        self._close_add_param_popup()
+        self._save_workspace_snapshot()
+        self._set_active_preset_name(preset_name)
+        workspace = self._workspace_for_preset(preset_name)
+        if workspace is None:
+            return
+        self._workspace = workspace
+        self._refresh_preset_ribbon(preserve_scroll=True, reveal_active=False)
+        self._plot_workspace.set_workspace(workspace)
+        self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._save_workspace_presets()
+        self._refresh_params_table()
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._save_workspace_snapshot()
         self._save_window_layout()
         super().closeEvent(event)
+
+    def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
+        if (
+            watched is self._preset_rename_editor
+            and event.type() == QtCore.QEvent.Type.KeyPress
+            and isinstance(event, QtGui.QKeyEvent)
+            and event.key() == QtCore.Qt.Key.Key_Escape
+        ):
+            self._cancel_preset_rename()
+            return True
+        return super().eventFilter(watched, event)
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget(self)
@@ -294,12 +1024,48 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_panel = QtWidgets.QWidget()
         plot_layout = QtWidgets.QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
-        plot_layout.setSpacing(8)
+        plot_layout.setSpacing(6)
 
         workspace_toolbar = QtWidgets.QHBoxLayout()
-        workspace_toolbar.setSpacing(6)
-        self._workspace_label = QtWidgets.QLabel("No plot workspace loaded")
-        workspace_toolbar.addWidget(self._workspace_label, 1)
+        workspace_toolbar.setSpacing(8)
+
+        self._preset_scroll = QtWidgets.QScrollArea()
+        self._preset_scroll.setWidgetResizable(True)
+        self._preset_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._preset_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._preset_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._preset_scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self._preset_scroll.setFixedHeight(34)
+        self._preset_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._preset_strip = QtWidgets.QWidget()
+        self._preset_button_layout = QtWidgets.QHBoxLayout(self._preset_strip)
+        self._preset_button_layout.setContentsMargins(0, 0, 0, 0)
+        self._preset_button_layout.setSpacing(4)
+        self._preset_scroll.setWidget(self._preset_strip)
+        workspace_toolbar.addWidget(self._preset_scroll, 1)
+        workspace_toolbar.addSpacing(10)
+
+        self._preset_toolbar_divider = QtWidgets.QFrame()
+        self._preset_toolbar_divider.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        self._preset_toolbar_divider.setFrameShadow(QtWidgets.QFrame.Shadow.Plain)
+        self._preset_toolbar_divider.setLineWidth(1)
+        self._preset_toolbar_divider.setFixedHeight(24)
+        self._preset_toolbar_divider.setStyleSheet("color: #4f5969; background-color: #4f5969;")
+        workspace_toolbar.addWidget(self._preset_toolbar_divider)
+        workspace_toolbar.addSpacing(14)
+
+        self._new_preset_button = QtWidgets.QPushButton("+")
+        self._configure_button(
+            self._new_preset_button,
+            tooltip="Create a new blank plot preset",
+        )
+        self._new_preset_button.setFixedSize(28, 28)
+        self._new_preset_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._new_preset_button.setStyleSheet(PRESET_ADD_BUTTON_STYLESHEET)
+
         self._add_pane_button = QtWidgets.QPushButton("Add Pane")
         self._configure_button(
             self._add_pane_button,
@@ -307,7 +1073,7 @@ class MainWindow(QtWidgets.QMainWindow):
             text="Add Pane",
             tooltip="Add a new plot pane",
         )
-        workspace_toolbar.addWidget(self._add_pane_button)
+        self._style_header_action_button(self._add_pane_button)
         self._duplicate_pane_button = QtWidgets.QPushButton("Duplicate Pane")
         self._configure_button(
             self._duplicate_pane_button,
@@ -315,7 +1081,7 @@ class MainWindow(QtWidgets.QMainWindow):
             text="Duplicate Pane",
             tooltip="Duplicate the active pane",
         )
-        workspace_toolbar.addWidget(self._duplicate_pane_button)
+        self._style_header_action_button(self._duplicate_pane_button)
         self._export_plot_button = QtWidgets.QPushButton("Export Plot")
         self._configure_button(
             self._export_plot_button,
@@ -323,7 +1089,7 @@ class MainWindow(QtWidgets.QMainWindow):
             text="Export Plot",
             tooltip="Export the active plot pane as a high-resolution image",
         )
-        workspace_toolbar.addWidget(self._export_plot_button)
+        self._style_header_action_button(self._export_plot_button, variant="export")
         self._remove_pane_button = QtWidgets.QPushButton("Remove Pane")
         self._configure_button(
             self._remove_pane_button,
@@ -331,6 +1097,10 @@ class MainWindow(QtWidgets.QMainWindow):
             text="Remove Pane",
             tooltip="Remove the active pane",
         )
+        self._style_header_action_button(self._remove_pane_button, variant="danger")
+        workspace_toolbar.addWidget(self._add_pane_button)
+        workspace_toolbar.addWidget(self._duplicate_pane_button)
+        workspace_toolbar.addWidget(self._export_plot_button)
         workspace_toolbar.addWidget(self._remove_pane_button)
         plot_layout.addLayout(workspace_toolbar)
 
@@ -370,15 +1140,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._params_state_label.setWordWrap(True)
         layout.addWidget(self._params_state_label)
 
-        self._refresh_params_button = QtWidgets.QPushButton("Refresh Params")
+        controls_layout = QtWidgets.QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+
+        self._add_param_button = QtWidgets.QPushButton("Add Parameter")
+        self._configure_button(
+            self._add_param_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_FileDialogNewFolder,
+            text="Add Parameter",
+            tooltip="Add a parameter card to this preset",
+        )
+        controls_layout.addWidget(self._add_param_button, 1)
+
+        self._refresh_params_button = QtWidgets.QPushButton()
         self._configure_button(
             self._refresh_params_button,
             icon=QtWidgets.QStyle.StandardPixmap.SP_BrowserReload,
             text="Refresh Params",
             tooltip="Read current parameter values from the device",
         )
-        self._refresh_params_button.clicked.connect(self._refresh_params_from_device)
-        layout.addWidget(self._refresh_params_button)
+        self._refresh_params_button.setText("")
+        self._refresh_params_button.setFixedWidth(34)
+        controls_layout.addWidget(self._refresh_params_button, 0)
+
+        layout.addLayout(controls_layout)
 
         self._param_list_scroll = QtWidgets.QScrollArea()
         self._param_list_scroll.setWidgetResizable(True)
@@ -398,32 +1184,21 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        self._command_combo = QtWidgets.QComboBox()
-        layout.addWidget(self._command_combo)
-
         self._commands_state_label = QtWidgets.QLabel("Waiting for device description…")
         self._commands_state_label.setWordWrap(True)
         layout.addWidget(self._commands_state_label)
 
-        self._command_form_container = QtWidgets.QWidget()
-        self._command_form_layout = QtWidgets.QFormLayout(self._command_form_container)
-        self._command_form_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._command_form_container)
+        self._command_cards_scroll = QtWidgets.QScrollArea()
+        self._command_cards_scroll.setWidgetResizable(True)
+        self._command_cards_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._command_cards_container = QtWidgets.QWidget()
+        self._command_cards_layout = QtWidgets.QVBoxLayout(self._command_cards_container)
+        self._command_cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._command_cards_layout.setSpacing(8)
+        self._command_cards_layout.addStretch(1)
+        self._command_cards_scroll.setWidget(self._command_cards_container)
+        layout.addWidget(self._command_cards_scroll, 1)
 
-        self._command_response_label = QtWidgets.QLabel("No command sent yet")
-        self._command_response_label.setWordWrap(True)
-        layout.addWidget(self._command_response_label)
-
-        self._send_command_button = QtWidgets.QPushButton("Send Command")
-        self._configure_button(
-            self._send_command_button,
-            icon=QtWidgets.QStyle.StandardPixmap.SP_ArrowForward,
-            text="Send Command",
-            tooltip="Send the selected command to the device",
-        )
-        self._send_command_button.clicked.connect(self._send_selected_command)
-        layout.addWidget(self._send_command_button)
-        layout.addStretch(1)
         return widget
 
     def _build_events_tab(self) -> QtWidgets.QWidget:
@@ -472,11 +1247,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._field_list.currentTextChanged.connect(lambda _text: self._refresh_discovery_views())
         self._field_list.itemDoubleClicked.connect(lambda _item: self._add_selected_field_to_active_pane())
         self._add_trace_button.clicked.connect(self._add_selected_field_to_active_pane)
+        self._new_preset_button.clicked.connect(self._create_preset)
+        self._add_param_button.clicked.connect(self._show_add_param_menu)
+        self._refresh_params_button.clicked.connect(self._refresh_params_from_device)
         self._add_pane_button.clicked.connect(self._plot_workspace.add_pane)
         self._duplicate_pane_button.clicked.connect(self._plot_workspace.duplicate_active_pane)
         self._export_plot_button.clicked.connect(self._export_active_plot)
         self._remove_pane_button.clicked.connect(self._confirm_remove_active_pane)
-        self._command_combo.currentIndexChanged.connect(self._rebuild_command_form)
         self._event_filter.currentTextChanged.connect(self._refresh_events_view)
         self._log_filter.currentTextChanged.connect(self._refresh_logs_view)
         self._plot_workspace.workspace_changed.connect(self._on_workspace_changed)
@@ -637,8 +1414,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._selected_device = None
         self._selected_stream = None
         self._workspace = None
-        self._workspace_loaded_from_store = False
-        self._workspace_user_modified = False
+        self._workspace_presets = None
+        self._active_preset_name = None
+        self._seedable_preset_names = set()
+        if self._add_param_popup is not None:
+            self._add_param_popup.close()
         self._pending_param_values = {}
         self._param_apply_commands = {}
         self._apply_command_params = {}
@@ -652,15 +1432,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stream_list.clear()
         self._field_list.clear()
         self._plot_workspace.set_workspace(None)
-        self._workspace_label.setText("No plot workspace loaded")
+        self._refresh_preset_ribbon()
         self._clear_param_records()
         self._events_view.clear()
         self._logs_view.clear()
         self._raw_view.clear()
-        self._command_response_label.setText("No command sent yet")
         self._current_command_specs = []
+        self._all_param_specs = []
         self._current_param_specs = []
-        self._command_widgets = {}
+        self._command_cards = {}
+        self._command_card_widgets = {}
+        self._command_card_status_labels = {}
+        self._command_id_to_name = {}
         self._param_editors = {}
         self._param_apply_buttons = {}
         self._param_cards = {}
@@ -668,7 +1451,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._param_current_labels = {}
         self._param_row_indexes = {}
         self._param_visual_states = {}
-        self._command_combo.clear()
         self._refresh_discovery_views()
 
     def _on_connection_state_changed(self, connected: bool) -> None:
@@ -789,35 +1571,49 @@ class MainWindow(QtWidgets.QMainWindow):
         del blocker
 
     def _load_workspace_for_selected_device(self) -> None:
+        self._cancel_preset_rename()
         if self._selected_device is None:
             self._workspace = None
+            self._workspace_presets = None
+            self._active_preset_name = None
+            self._seedable_preset_names = set()
+            self._refresh_preset_ribbon()
             self._plot_workspace.set_workspace(None)
-            self._workspace_label.setText("No plot workspace loaded")
             return
 
         try:
-            workspace = self._workspace_store.load(self._selected_device)
+            presets = self._workspace_store.load(self._selected_device)
         except Exception as exc:
             self._show_status(f"failed to load saved layout: {exc}", error=True)
-            workspace = None
+            presets = None
 
-        self._workspace_loaded_from_store = workspace is not None
-        self._workspace_user_modified = False
-        if workspace is None:
-            workspace = self._controller.runtime.build_default_workspace(self._selected_device)
+        if presets is None:
+            presets = WorkspacePresetCollection(
+                device=self._selected_device,
+                presets=(
+                    WorkspacePreset(
+                        name=DEFAULT_PRESET_NAME,
+                        workspace=self._controller.runtime.build_default_workspace(self._selected_device),
+                        visible_param_names=(),
+                    ),
+                ),
+                active_preset_name=DEFAULT_PRESET_NAME,
+            )
+            self._seedable_preset_names = {DEFAULT_PRESET_NAME}
+        else:
+            self._seedable_preset_names = set()
 
-        self._workspace = workspace
-        self._plot_workspace.set_workspace(workspace)
-        self._workspace_label.setText(f"Workspace for {workspace.device}")
+        self._workspace_presets = presets
+        self._active_preset_name = presets.active_preset_name
+        self._workspace = self._workspace_for_preset(self._active_preset_name)
+        self._refresh_preset_ribbon()
+        self._plot_workspace.set_workspace(self._workspace)
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
 
     def _maybe_seed_default_workspace(self) -> None:
-        if (
-            self._selected_device is None
-            or self._workspace is None
-            or self._workspace_loaded_from_store
-            or self._workspace_user_modified
-        ):
+        if self._selected_device is None or self._workspace is None or self._active_preset_name is None:
+            return
+        if self._active_preset_name not in self._seedable_preset_names:
             return
 
         if any(pane.traces for pane in self._workspace.panes):
@@ -827,8 +1623,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not any(pane.traces for pane in seeded.panes):
             return
         self._workspace = seeded
+        self._replace_preset_workspace(self._active_preset_name, seeded)
+        self._seedable_preset_names.discard(self._active_preset_name)
         self._plot_workspace.set_workspace(seeded)
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
+        self._save_workspace_presets()
 
     def _add_selected_field_to_active_pane(self) -> None:
         if self._selected_stream is None or self._selected_device is None:
@@ -879,6 +1678,7 @@ class MainWindow(QtWidgets.QMainWindow):
         previous_device = self._selected_device
         self._selected_device = device or None
         if previous_device != self._selected_device:
+            self._close_add_param_popup()
             self._clear_all_param_apply_timers()
             self._param_visual_states = {}
             self._pending_param_values = {}
@@ -887,8 +1687,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stream_names = []
             self._field_names = []
             self._param_schema = ()
-            self._workspace_loaded_from_store = False
-            self._workspace_user_modified = False
+            self._all_param_specs = []
         self._refresh_stream_list()
         self._refresh_field_list()
         self._load_workspace_for_selected_device()
@@ -934,12 +1733,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._clear_param_apply_timer(param_name)
                 self._param_apply_attempts.pop(param_name, None)
                 self._param_apply_values.pop(param_name, None)
-            suffix = ""
-            if message.ok and message.result is not None:
-                suffix = f" result={dict(message.result)}"
-            elif not message.ok and message.error is not None:
-                suffix = f" error={message.error.code}: {message.error.message}"
-            self._command_response_label.setText(f"resp id={message.id} ok={message.ok}{suffix}")
+            cmd_name = self._command_id_to_name.pop(message.id, None)
+            if cmd_name is not None:
+                status_label = self._command_card_status_labels.get(cmd_name)
+                if status_label is not None:
+                    if message.ok:
+                        result_str = f" {dict(message.result)}" if message.result is not None else ""
+                        status_label.setText(f"ok{result_str}")
+                    else:
+                        err = message.error
+                        status_label.setText(f"error: {err.code}: {err.message}" if err is not None else "error")
             self._refresh_params_table()
         elif isinstance(message, EventMessage):
             self._refresh_events_view()
@@ -951,20 +1754,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if not isinstance(workspace, PlotWorkspace):
             return
         self._workspace = workspace
-        self._workspace_user_modified = True
-        self._workspace_label.setText(f"Workspace for {workspace.device}")
+        if self._active_preset_name is not None:
+            self._seedable_preset_names.discard(self._active_preset_name)
         self._save_workspace_snapshot()
         self._plot_workspace.refresh_data(self._controller.runtime, self._selected_device)
 
     def _save_workspace_snapshot(self) -> None:
         workspace = self._plot_workspace.current_workspace_snapshot()
-        if workspace is None:
+        if workspace is None or self._workspace_presets is None or self._active_preset_name is None:
             return
         self._workspace = workspace
-        try:
-            self._workspace_store.save(workspace)
-        except Exception as exc:
-            self._show_status(f"failed to save layout: {exc}", error=True)
+        self._replace_preset_workspace(self._active_preset_name, workspace)
+        self._save_workspace_presets()
 
     def _restore_window_layout(self) -> None:
         try:
@@ -1033,7 +1834,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _refresh_params_table(self) -> None:
         device_model = self._controller.runtime.get_device(self._selected_device)
-        self._current_param_specs = list(self._controller.runtime.param_specs_for_device(self._selected_device))
+        self._all_param_specs = list(self._controller.runtime.param_specs_for_device(self._selected_device))
+        visible_names = set(self._visible_param_names())
+        self._current_param_specs = [spec for spec in self._all_param_specs if spec.name in visible_names]
         self._drop_satisfied_pending_params(device_model)
         next_schema = tuple(self._current_param_specs)
         if next_schema != self._param_schema:
@@ -1064,39 +1867,68 @@ class MainWindow(QtWidgets.QMainWindow):
 
             card = QtWidgets.QFrame()
             card.setObjectName("paramRecord")
+            card.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            card.customContextMenuRequested.connect(
+                lambda pos, name=spec.name, source=card: self._show_param_card_context_menu(name, source.mapToGlobal(pos))
+            )
             card_layout = QtWidgets.QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 8, 10, 8)
-            card_layout.setSpacing(8)
+            card_layout.setContentsMargins(8, 6, 8, 6)
+            card_layout.setSpacing(4)
 
-            name_label = QtWidgets.QLabel(spec.name)
+            name_label = ElidedLabel(spec.name)
             name_label.setProperty("role", "name")
             name_label.setToolTip(spec.name)
-            name_label.setWordWrap(True)
             name_font = name_label.font()
             name_font.setBold(True)
             name_label.setFont(name_font)
             card_layout.addWidget(name_label)
 
-            details_layout = QtWidgets.QHBoxLayout()
-            details_layout.setContentsMargins(0, 0, 0, 0)
-            details_layout.setSpacing(12)
+            if spec.access == "rw":
+                action_widget = QtWidgets.QPushButton("Apply")
+                action_widget.pressed.connect(lambda name=spec.name: self._apply_param(name))
+                action_widget.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
+                action_widget.setMinimumWidth(max(72, action_widget.fontMetrics().horizontalAdvance("Applying...") + 22))
+                self._param_apply_buttons[spec.name] = action_widget
+            else:
+                action_widget = self._create_param_status_badge("Read only")
+
+            metadata_layout = QtWidgets.QHBoxLayout()
+            metadata_layout.setContentsMargins(0, 0, 0, 0)
+            metadata_layout.setSpacing(6)
+
+            current_caption = QtWidgets.QLabel("Current")
+            current_caption.setProperty("role", "caption")
+            caption_font = current_caption.font()
+            if caption_font.pointSize() > 1:
+                caption_font.setPointSize(caption_font.pointSize() - 1)
+            current_caption.setFont(caption_font)
+            metadata_layout.addWidget(current_caption, 0)
 
             current_label = QtWidgets.QLabel(str(current_value))
             current_label.setProperty("role", "value")
             current_label.setToolTip(str(current_value))
-            details_layout.addWidget(self._create_param_detail_group("Type", QtWidgets.QLabel(spec.type)))
-            details_layout.addWidget(self._create_param_detail_group("Current", current_label))
-            details_layout.addWidget(self._create_param_detail_group("Edit", editor), 1)
+            metadata_layout.addWidget(current_label, 0)
 
-            if spec.access == "rw":
-                action_widget = QtWidgets.QPushButton("Apply")
-                action_widget.pressed.connect(lambda name=spec.name: self._apply_param(name))
-                self._param_apply_buttons[spec.name] = action_widget
-            else:
-                action_widget = QtWidgets.QLabel("Read only")
-            details_layout.addWidget(self._create_param_detail_group("Action", action_widget))
+            type_caption = QtWidgets.QLabel("Type")
+            type_caption.setProperty("role", "caption")
+            type_caption.setFont(caption_font)
+            metadata_layout.addSpacing(8)
+            metadata_layout.addWidget(type_caption, 0)
 
-            card_layout.addLayout(details_layout)
+            type_badge = self._create_param_type_badge(spec.type)
+            metadata_layout.addWidget(type_badge, 0)
+            metadata_layout.addStretch(1)
+            card_layout.addLayout(metadata_layout)
+
+            editor_layout = QtWidgets.QHBoxLayout()
+            editor_layout.setContentsMargins(0, 0, 0, 0)
+            editor_layout.setSpacing(8)
+            editor_layout.addWidget(editor, 1)
+            editor_layout.addWidget(action_widget, 0)
+            card_layout.addLayout(editor_layout)
             self._param_list_layout.addWidget(card)
 
             self._param_cards[spec.name] = card
@@ -1147,7 +1979,7 @@ class MainWindow(QtWidgets.QMainWindow):
         container = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(1)
 
         caption = QtWidgets.QLabel(title)
         caption.setProperty("role", "caption")
@@ -1160,9 +1992,33 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(widget)
         return container
 
+    def _create_param_type_badge(self, label: str) -> QtWidgets.QLabel:
+        badge = QtWidgets.QLabel(label)
+        badge.setProperty("role", "typeBadge")
+        badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        badge.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        return badge
+
+    def _create_param_status_badge(self, label: str) -> QtWidgets.QLabel:
+        badge = QtWidgets.QLabel(label)
+        badge.setProperty("role", "statusBadge")
+        badge.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        badge.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        return badge
+
     def _create_param_editor(self, spec: ParamSpec, current_value: object) -> tuple[str, QtWidgets.QWidget]:
         if spec.access != "rw":
             label = QtWidgets.QLabel(str(current_value))
+            label.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
             return ("readonly", label)
 
         if spec.type == "bool":
@@ -1175,6 +2031,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 editor = QtWidgets.QDoubleSpinBox()
                 editor.setKeyboardTracking(False)
                 editor.setDecimals(3)
+                editor.setMinimumWidth(96)
+                editor.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
                 editor.setRange(
                     float(spec.min if spec.min is not None else -1_000_000.0),
                     float(spec.max if spec.max is not None else 1_000_000.0),
@@ -1182,6 +2043,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 editor.setValue(float(current_value))
                 return ("float_spin", editor)
             line_edit = QtWidgets.QLineEdit(str(current_value))
+            line_edit.setMinimumWidth(96)
+            line_edit.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Fixed,
+            )
             return ("text", line_edit)
 
         if spec.min is not None or spec.max is not None:
@@ -1190,11 +2056,21 @@ class MainWindow(QtWidgets.QMainWindow):
             if min_value >= -2_147_483_648 and max_value <= 2_147_483_647:
                 editor = QtWidgets.QSpinBox()
                 editor.setKeyboardTracking(False)
+                editor.setMinimumWidth(96)
+                editor.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Expanding,
+                    QtWidgets.QSizePolicy.Policy.Fixed,
+                )
                 editor.setRange(min_value, max_value)
                 editor.setValue(int(current_value))
                 return ("int_spin", editor)
 
         line_edit = QtWidgets.QLineEdit(str(current_value))
+        line_edit.setMinimumWidth(96)
+        line_edit.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         return ("text", line_edit)
 
     def _apply_param(self, param_name: str) -> None:
@@ -1234,29 +2110,59 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_command_specs = list(
             self._controller.runtime.command_specs_for_device(self._selected_device, include_reserved=False)
         )
-        self._command_combo.blockSignals(True)
-        self._command_combo.clear()
+        # Remove existing cards.
+        while self._command_cards_layout.count() > 1:
+            item = self._command_cards_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        self._command_cards = {}
+        self._command_card_widgets = {}
+        self._command_card_status_labels = {}
         for command in self._current_command_specs:
-            self._command_combo.addItem(command.name)
-        self._command_combo.blockSignals(False)
-        self._rebuild_command_form()
+            card = self._build_command_card(command)
+            self._command_cards_layout.insertWidget(self._command_cards_layout.count() - 1, card)
+            self._command_cards[command.name] = card
         self._refresh_discovery_views()
 
-    def _rebuild_command_form(self) -> None:
-        while self._command_form_layout.count():
-            item = self._command_form_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
+    def _build_command_card(self, command: CommandSpec) -> QtWidgets.QFrame:
+        card = QtWidgets.QFrame()
+        card.setObjectName("paramRecord")
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(4)
 
-        self._command_widgets = {}
-        index = self._command_combo.currentIndex()
-        if index < 0 or index >= len(self._current_command_specs):
-            self._command_response_label.setText("No command available for this device")
-            return
+        # Header row: name + send button.
+        header_layout = QtWidgets.QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(8)
 
-        command = self._current_command_specs[index]
+        name_label = QtWidgets.QLabel(command.name)
+        name_font = name_label.font()
+        name_font.setBold(True)
+        name_label.setFont(name_font)
+        name_label.setToolTip(command.name)
+        header_layout.addWidget(name_label, 1)
+
+        send_button = QtWidgets.QPushButton("Send")
+        self._configure_button(
+            send_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_ArrowForward,
+            tooltip=f"Send {command.name}",
+        )
+        send_button.setFixedWidth(72)
+        header_layout.addWidget(send_button, 0)
+        card_layout.addLayout(header_layout)
+
+        # Arg editors (one row per arg).
+        arg_widgets: dict[str, tuple[str, QtWidgets.QWidget]] = {}
         for arg in command.args:
+            row_layout = QtWidgets.QHBoxLayout()
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            arg_label = QtWidgets.QLabel(arg.name + ":")
+            arg_label.setProperty("role", "caption")
+            row_layout.addWidget(arg_label, 0)
             if arg.type == "string":
                 editor: QtWidgets.QWidget = QtWidgets.QLineEdit()
                 kind = "string"
@@ -1273,25 +2179,39 @@ class MainWindow(QtWidgets.QMainWindow):
                 line.setPlaceholderText("JSON value")
                 editor = line
                 kind = "json"
-            self._command_form_layout.addRow(arg.name, editor)
-            self._command_widgets[arg.name] = (kind, editor)
-        self._command_response_label.setText(f"Ready to send {command.name}")
-        self._refresh_discovery_views()
+            row_layout.addWidget(editor, 1)
+            card_layout.addLayout(row_layout)
+            arg_widgets[arg.name] = (kind, editor)
+        self._command_card_widgets[command.name] = arg_widgets
 
-    def _send_selected_command(self) -> None:
-        index = self._command_combo.currentIndex()
-        if index < 0 or index >= len(self._current_command_specs) or self._selected_device is None:
-            self._show_status("choose a device and command first", error=True)
+        # Status label (hidden until a send is attempted).
+        status_label = QtWidgets.QLabel()
+        status_label.setProperty("role", "caption")
+        status_label.setWordWrap(True)
+        status_label.setVisible(False)
+        card_layout.addWidget(status_label)
+        self._command_card_status_labels[command.name] = status_label
+
+        send_button.clicked.connect(lambda: self._send_command_from_card(command.name))
+        return card
+
+    def _send_command_from_card(self, command_name: str) -> None:
+        if self._selected_device is None:
+            self._show_status("choose a device first", error=True)
             return
 
-        command = self._current_command_specs[index]
+        arg_widgets = self._command_card_widgets.get(command_name, {})
         args: dict[str, object] = {}
+        spec_map = {c.name: c for c in self._current_command_specs}
+        command = spec_map.get(command_name)
+        if command is None:
+            return
 
         try:
             for arg in command.args:
-                kind, widget = self._command_widgets[arg.name]
+                kind, widget = arg_widgets[arg.name]
                 if kind == "string":
-                    value = widget.text()  # type: ignore[union-attr]
+                    value: object = widget.text()  # type: ignore[union-attr]
                     if arg.required and value == "":
                         raise ValueError(f"{arg.name} is required")
                 elif kind == "integer":
@@ -1312,11 +2232,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         command_id = self._controller.send_command(
             device=self._selected_device,
-            name=command.name,
+            name=command_name,
             args=args,
         )
-        if command_id is not None:
-            self._command_response_label.setText(f"sent {command.name} id={command_id}")
+        status_label = self._command_card_status_labels.get(command_name)
+        if command_id is not None and status_label is not None:
+            self._command_id_to_name[command_id] = command_name
+            status_label.setText(f"sent (id={command_id})")
+            status_label.setVisible(True)
 
     def _refresh_events_view(self) -> None:
         device_model = self._controller.runtime.get_device(self._selected_device)
@@ -1374,7 +2297,12 @@ class MainWindow(QtWidgets.QMainWindow):
         _workspace, active_pane, active_title, active_color = self._active_pane_details()
 
         if has_capabilities:
-            params_message = "" if self._current_param_specs else "No parameters available for this device."
+            if not self._all_param_specs:
+                params_message = "No parameters available for this device."
+            elif not self._current_param_specs:
+                params_message = "No parameters added to this preset."
+            else:
+                params_message = ""
             commands_message = "" if self._current_command_specs else "No device-specific commands available."
         elif self._controller.discovery_state == "pending":
             params_message = "Waiting for device description…"
@@ -1392,12 +2320,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._params_state_label.setVisible(bool(params_message))
         self._params_state_label.setText(params_message)
         self._refresh_params_button.setEnabled(has_capabilities and self._controller.is_connected)
-        self._param_list_scroll.setEnabled(has_capabilities or bool(self._current_param_specs))
+        self._add_param_button.setEnabled(has_capabilities and bool(self._all_param_specs))
+        self._param_list_scroll.setEnabled(has_capabilities or bool(self._all_param_specs))
 
         self._commands_state_label.setVisible(bool(commands_message))
         self._commands_state_label.setText(commands_message)
-        self._command_combo.setEnabled(has_capabilities and bool(self._current_command_specs))
-        self._command_form_container.setEnabled(has_capabilities and bool(self._current_command_specs))
+        self._command_cards_scroll.setEnabled(has_capabilities)
         self._add_trace_button.set_segments("Add Selected Trace to", "", active_color)
         self._add_trace_button.setToolTip(
             f"Add the selected field to {active_title}" if active_pane is not None else "Add the selected field to the active pane"
@@ -1428,8 +2356,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 line_edit.textEdited.connect(
                     lambda text, name=param_name: self._on_param_text_edited(name, text)
                 )
+                line_edit.returnPressed.connect(lambda name=param_name: self._apply_param_from_editor(name))
         elif kind == "text":
             editor.textChanged.connect(lambda _text, name=param_name: self._on_param_edited(name))  # type: ignore[union-attr]
+            editor.returnPressed.connect(lambda name=param_name: self._apply_param_from_editor(name))  # type: ignore[union-attr]
+
+    def _apply_param_from_editor(self, param_name: str) -> None:
+        apply_button = self._param_apply_buttons.get(param_name)
+        if apply_button is None or not apply_button.isEnabled():
+            return
+        self._apply_param(param_name)
 
     def _read_param_editor_value(self, kind: str, widget: QtWidgets.QWidget) -> object:
         if kind == "bool":
@@ -1564,6 +2500,9 @@ class MainWindow(QtWidgets.QMainWindow):
         field_text_color = self._blend_color(text_color, QtGui.QColor("#f5f7ff"), 0.18 if is_dark else 0.0)
         name_text_color = self._blend_color(field_text_color, QtGui.QColor("#ffffff"), 0.20 if is_dark else 0.08)
         caption_color = caption_base_color
+        badge_fill = self._blend_color(base_color, palette.alternateBase().color(), 0.72 if is_dark else 0.45)
+        badge_border = self._blend_color(badge_fill, field_text_color, 0.30 if is_dark else 0.18)
+        badge_text_color = self._blend_color(field_text_color, QtGui.QColor("#ffffff"), 0.16 if is_dark else 0.05)
 
         if applying:
             card_color = self._blend_color(base_color, blue, 0.20 if is_dark else 0.10)
@@ -1593,6 +2532,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 "}"
                 "QFrame#paramRecord QLabel[role='caption'] {"
                 f"color: {caption_color.name()};"
+                "}"
+                "QFrame#paramRecord QLabel[role='typeBadge'],"
+                "QFrame#paramRecord QLabel[role='statusBadge'] {"
+                f"color: {badge_text_color.name()};"
+                f"background-color: {badge_fill.name()};"
+                f"border: 1px solid {badge_border.name()};"
+                "border-radius: 4px;"
+                "padding: 1px 8px;"
                 "}"
             )
             if applying:

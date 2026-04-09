@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import pyqtgraph as pg
@@ -22,6 +22,12 @@ WHEEL_ZOOM_BASE = 0.85
 MIN_Y_SPAN = 1e-6
 MIN_EXPORT_WIDTH_PX = 2400
 EXPORT_SCALE_FACTOR = 3
+TRACE_PANEL_MARGIN_PX = 10
+TRACE_PANEL_MAX_HEIGHT_FRACTION = 0.5
+TRACE_PANEL_MIN_WIDTH_PX = 320
+TRACE_PANEL_MIN_HEIGHT_PX = 96
+TRACE_PANEL_SCROLLBAR_GUTTER_PX = 6
+TRACE_PANEL_RESIZE_GRIP_HEIGHT_PX = 20
 
 
 @dataclass
@@ -40,6 +46,8 @@ class _PlotPaneWidget(QtWidgets.QFrame):
     move_up_requested = QtCore.Signal(str)
     move_down_requested = QtCore.Signal(str)
     duplicate_requested = QtCore.Signal(str)
+    trace_panel_visibility_changed = QtCore.Signal(str, bool)
+    trace_panel_height_changed = QtCore.Signal(str, int)
     trace_visibility_changed = QtCore.Signal(str, str, str, bool)
     trace_remove_requested = QtCore.Signal(str, str, str)
     trace_color_changed = QtCore.Signal(str, str, str, str)
@@ -57,6 +65,10 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         self._curves: dict[tuple[str, str], pg.PlotDataItem] = {}
         self._suppress_manual_x_signal = False
         self._active = False
+        self._trace_panel_drag_origin_y: float | None = None
+        self._trace_panel_drag_start_height: int | None = None
+        self._trace_panel_drag_height: int | None = None
+        self._trace_panel_drag_moved = False
         self._build_ui()
         self.set_pane(pane, [pane.x_group], self._pane_color)
 
@@ -71,8 +83,9 @@ class _PlotPaneWidget(QtWidgets.QFrame):
     def _build_ui(self) -> None:
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         self.setLineWidth(1)
+        self.setObjectName("plotPane")
         self.installEventFilter(self)
-        self.setStyleSheet("QFrame { border: 1px solid #3a4756; border-radius: 6px; }")
+        self.setStyleSheet("#plotPane { border: 1px solid #3a4756; border-radius: 6px; }")
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -170,6 +183,11 @@ class _PlotPaneWidget(QtWidgets.QFrame):
 
         layout.addLayout(header)
 
+        self._plot_host = QtWidgets.QWidget()
+        self._plot_host.installEventFilter(self)
+        plot_layout = QtWidgets.QVBoxLayout(self._plot_host)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+
         self._plot_widget = pg.PlotWidget()
         self._plot_widget.grabGesture(QtCore.Qt.GestureType.PinchGesture)
         self._plot_widget.installEventFilter(self)
@@ -181,15 +199,113 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         self._plot_widget.enableAutoRange(axis=pg.ViewBox.XAxis, enable=False)
         self._plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis, enable=True)
         self._plot_widget.getViewBox().sigRangeChangedManually.connect(self._on_manual_range_changed)
+        self._plot_widget.getViewBox().sigResized.connect(self._on_plot_view_resized)
         self._plot_widget.scene().sigMouseClicked.connect(lambda *_: self.activated.emit(self._pane.id))
-        layout.addWidget(self._plot_widget, 1)
+        plot_layout.addWidget(self._plot_widget, 1)
+        layout.addWidget(self._plot_host, 1)
+
+        self._show_trace_panel_button = QtWidgets.QPushButton("Show Traces", self._plot_host)
+        self._show_trace_panel_button.installEventFilter(self)
+        self._show_trace_panel_button.setToolTip("Show trace controls for this pane")
+        self._show_trace_panel_button.setStatusTip("Show trace controls for this pane")
+        self._show_trace_panel_button.setStyleSheet(
+            "QPushButton {"
+            " background-color: rgba(42, 50, 64, 235);"
+            " color: #d7e1ef;"
+            " border: 1px solid #4f5d70;"
+            " border-radius: 5px;"
+            " padding: 4px 10px;"
+            "}"
+            "QPushButton:hover {"
+            " background-color: rgba(51, 60, 76, 245);"
+            " border-color: #62748b;"
+            "}"
+        )
+        self._show_trace_panel_button.clicked.connect(lambda: self.trace_panel_visibility_changed.emit(self._pane.id, True))
+
+        self._trace_overlay = QtWidgets.QFrame(self._plot_host)
+        self._trace_overlay.setObjectName("traceOverlay")
+        self._trace_overlay.installEventFilter(self)
+        self._trace_overlay.setStyleSheet(
+            "QFrame#traceOverlay {"
+            " background-color: rgba(20, 28, 39, 240);"
+            " border: 1px solid #465566;"
+            " border-radius: 6px;"
+            "}"
+        )
+        overlay_layout = QtWidgets.QVBoxLayout(self._trace_overlay)
+        overlay_layout.setContentsMargins(8, 8, 8, 8)
+        overlay_layout.setSpacing(6)
+
+
+        self._trace_scroll = QtWidgets.QScrollArea()
+        self._trace_scroll.installEventFilter(self)
+        self._trace_scroll.viewport().installEventFilter(self)
+        self._trace_scroll.setWidgetResizable(True)
+        self._trace_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._trace_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._trace_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._trace_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        overlay_layout.addWidget(self._trace_scroll, 1)
 
         trace_container = QtWidgets.QWidget()
         trace_container.installEventFilter(self)
         self._trace_layout = QtWidgets.QVBoxLayout(trace_container)
-        self._trace_layout.setContentsMargins(0, 0, 0, 0)
+        scrollbar_extent = self.style().pixelMetric(QtWidgets.QStyle.PixelMetric.PM_ScrollBarExtent)
+        self._trace_layout.setContentsMargins(0, 0, scrollbar_extent + TRACE_PANEL_SCROLLBAR_GUTTER_PX, 0)
         self._trace_layout.setSpacing(4)
-        layout.addWidget(trace_container)
+        self._trace_scroll.setWidget(trace_container)
+
+        self._trace_resize_grip = QtWidgets.QWidget()
+        self._trace_resize_grip.installEventFilter(self)
+        self._trace_resize_grip.setCursor(QtCore.Qt.CursorShape.SizeVerCursor)
+        self._trace_resize_grip.setFixedHeight(TRACE_PANEL_RESIZE_GRIP_HEIGHT_PX)
+        self._trace_resize_grip.setToolTip("Drag to resize the trace panel")
+        self._trace_resize_grip.setStatusTip("Drag to resize the trace panel")
+        self._trace_resize_grip.setStyleSheet("background: transparent; border: none;")
+        grip_layout = QtWidgets.QHBoxLayout(self._trace_resize_grip)
+        grip_layout.setContentsMargins(2, 0, 2, 0)
+        grip_layout.setSpacing(0)
+
+        self._hide_trace_panel_button = QtWidgets.QToolButton()
+        hide_button = self._hide_trace_panel_button
+        hide_button.installEventFilter(self)
+        _pm = QtGui.QPixmap(12, 12)
+        _pm.fill(QtCore.Qt.GlobalColor.transparent)
+        _p = QtGui.QPainter(_pm)
+        _p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        _p.setPen(QtGui.QPen(
+            QtGui.QColor(95, 110, 130, 180), 1.5,
+            QtCore.Qt.PenStyle.SolidLine,
+            QtCore.Qt.PenCapStyle.RoundCap,
+            QtCore.Qt.PenJoinStyle.RoundJoin,
+        ))
+        _p.drawPolyline([QtCore.QPointF(2, 8), QtCore.QPointF(6, 4), QtCore.QPointF(10, 8)])
+        _p.end()
+        hide_button.setIcon(QtGui.QIcon(_pm))
+        hide_button.setIconSize(QtCore.QSize(12, 12))
+        hide_button.setFixedSize(18, 16)
+        hide_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        hide_button.setToolTip("Hide trace panel")
+        hide_button.setStatusTip("Hide trace panel")
+        hide_button.setStyleSheet(
+            "QToolButton { background: transparent; border: none; padding: 0px; }"
+            "QToolButton:hover { background: rgba(90, 105, 125, 140); border-radius: 3px; }"
+        )
+        hide_button.clicked.connect(lambda: self.trace_panel_visibility_changed.emit(self._pane.id, False))
+        grip_layout.addWidget(hide_button, 0)
+
+        grip_layout.addStretch(1)
+        grip_handle = QtWidgets.QFrame()
+        grip_handle.setFixedSize(36, 3)
+        grip_handle.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        grip_handle.setStyleSheet("background-color: rgba(95, 110, 130, 180); border: none; border-radius: 1px;")
+        grip_layout.addWidget(grip_handle)
+        grip_layout.addStretch(1)
+        overlay_layout.addWidget(self._trace_resize_grip, 0)
+
+        self._trace_overlay.hide()
+        self._show_trace_panel_button.hide()
 
     def _configure_button(
         self,
@@ -218,6 +334,157 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         self._active = active
         self._refresh_active_indicator()
 
+    def _update_trace_panel_visibility(self) -> None:
+        has_traces = bool(self._pane.traces)
+        panel_visible = has_traces and self._pane.trace_panel_visible
+        self._trace_overlay.setVisible(panel_visible)
+        self._show_trace_panel_button.setVisible(has_traces and not panel_visible)
+        self._update_trace_panel_geometry()
+        if panel_visible:
+            self._trace_overlay.raise_()
+        elif has_traces:
+            self._show_trace_panel_button.raise_()
+
+    def _plot_view_rect(self) -> QtCore.QRect:
+        host_rect = self._plot_host.contentsRect()
+        plot_item = self._plot_widget.plotItem
+        view_box = plot_item.getViewBox()
+        scene_rect = view_box.sceneBoundingRect()
+        if not scene_rect.isValid() or scene_rect.isEmpty():
+            return host_rect
+
+        top_left = self._plot_widget.mapTo(
+            self._plot_host,
+            self._plot_widget.mapFromScene(scene_rect.topLeft()),
+        )
+        bottom_right = self._plot_widget.mapTo(
+            self._plot_host,
+            self._plot_widget.mapFromScene(scene_rect.bottomRight()),
+        )
+        view_rect = QtCore.QRect(top_left, bottom_right).normalized()
+        if not view_rect.isValid() or view_rect.isEmpty():
+            return host_rect
+        clipped = view_rect.intersected(host_rect)
+        return clipped if clipped.isValid() and not clipped.isEmpty() else host_rect
+
+    def _trace_panel_minimum_height(self) -> int:
+        overlay_layout = self._trace_overlay.layout()
+        if overlay_layout is None:
+            return TRACE_PANEL_MIN_HEIGHT_PX
+        overlay_layout.activate()
+
+        first_row_widget: QtWidgets.QWidget | None = None
+        if self._trace_rows:
+            first_row = next(iter(self._trace_rows.values()))
+            first_row_widget = first_row[0].parentWidget()
+        if first_row_widget is None:
+            return TRACE_PANEL_MIN_HEIGHT_PX
+
+        row_height = first_row_widget.sizeHint().height()
+        margins = overlay_layout.contentsMargins()
+        spacing = overlay_layout.spacing()
+        grip_height = max(self._trace_resize_grip.sizeHint().height(), self._trace_resize_grip.height())
+        scroll_viewport_overhead = 2  # QScrollArea internal border/margin overhead
+        return (
+            margins.top()
+            + row_height + scroll_viewport_overhead
+            + spacing
+            + grip_height
+            + margins.bottom()
+        )
+
+    def _trace_panel_custom_height_bounds(self, anchor_rect: QtCore.QRect | None = None) -> tuple[int, int]:
+        target_rect = anchor_rect if anchor_rect is not None else self._plot_view_rect()
+        available_height = max(0, target_rect.height() - (TRACE_PANEL_MARGIN_PX * 2))
+        if available_height <= 0:
+            return (1, 1)
+        max_panel_height = max(1, available_height)
+        min_panel_height = min(self._trace_panel_minimum_height(), max_panel_height)
+        return (min_panel_height, max_panel_height)
+
+    def _clamp_trace_panel_custom_height(self, height: int, anchor_rect: QtCore.QRect | None = None) -> int:
+        min_panel_height, max_panel_height = self._trace_panel_custom_height_bounds(anchor_rect)
+        return min(max(int(height), min_panel_height), max_panel_height)
+
+    def _start_trace_panel_resize(self, global_y: float) -> bool:
+        if not self._trace_overlay.isVisible():
+            return False
+        self._trace_panel_drag_origin_y = float(global_y)
+        self._trace_panel_drag_start_height = max(1, self._trace_overlay.height())
+        self._trace_panel_drag_height = self._trace_panel_drag_start_height
+        self._trace_panel_drag_moved = False
+        self._trace_resize_grip.grabMouse()
+        return True
+
+    def _update_trace_panel_resize(self, global_y: float) -> bool:
+        if self._trace_panel_drag_origin_y is None or self._trace_panel_drag_start_height is None:
+            return False
+        desired_height = self._trace_panel_drag_start_height + round(float(global_y) - self._trace_panel_drag_origin_y)
+        clamped_height = self._clamp_trace_panel_custom_height(desired_height)
+        if clamped_height == self._trace_panel_drag_height:
+            return False
+        self._trace_panel_drag_height = clamped_height
+        self._trace_panel_drag_moved = True
+        self._update_trace_panel_geometry()
+        return True
+
+    def _finish_trace_panel_resize(self, *, commit: bool = True) -> None:
+        if self._trace_panel_drag_origin_y is None:
+            return
+        final_height = self._trace_panel_drag_height or self._trace_overlay.height()
+        self._trace_panel_drag_origin_y = None
+        self._trace_panel_drag_start_height = None
+        self._trace_resize_grip.releaseMouse()
+        if commit and self._trace_panel_drag_moved and final_height != self._pane.trace_panel_height:
+            self.trace_panel_height_changed.emit(self._pane.id, final_height)
+        self._trace_panel_drag_height = None
+        self._trace_panel_drag_moved = False
+        self._update_trace_panel_geometry()
+
+    def _update_trace_panel_geometry(self) -> None:
+        anchor_rect = self._plot_view_rect()
+        available_width = max(0, anchor_rect.width() - (TRACE_PANEL_MARGIN_PX * 2))
+        available_height = max(0, anchor_rect.height() - (TRACE_PANEL_MARGIN_PX * 2))
+        if available_width <= 0 or available_height <= 0:
+            return
+
+        button_size = self._show_trace_panel_button.sizeHint()
+        button_width = min(max(button_size.width(), 120), available_width)
+        button_height = min(button_size.height(), available_height)
+        self._show_trace_panel_button.setGeometry(
+            anchor_rect.left() + TRACE_PANEL_MARGIN_PX,
+            anchor_rect.top() + TRACE_PANEL_MARGIN_PX,
+            button_width,
+            button_height,
+        )
+
+        if not self._trace_overlay.isVisible():
+            return
+
+        overlay_layout = self._trace_overlay.layout()
+        if overlay_layout is not None:
+            overlay_layout.activate()
+        overlay_hint = self._trace_overlay.sizeHint()
+        panel_width = min(max(TRACE_PANEL_MIN_WIDTH_PX, overlay_hint.width()), available_width)
+        desired_custom_height = self._trace_panel_drag_height if self._trace_panel_drag_height is not None else self._pane.trace_panel_height
+        if desired_custom_height is None:
+            max_panel_height = max(1, int(available_height * TRACE_PANEL_MAX_HEIGHT_FRACTION))
+            min_panel_height = min(TRACE_PANEL_MIN_HEIGHT_PX, max_panel_height)
+            panel_height = min(max(min_panel_height, overlay_hint.height()), max_panel_height)
+        else:
+            panel_height = self._clamp_trace_panel_custom_height(desired_custom_height, anchor_rect)
+        self._trace_overlay.setGeometry(
+            anchor_rect.left() + TRACE_PANEL_MARGIN_PX,
+            anchor_rect.top() + TRACE_PANEL_MARGIN_PX,
+            panel_width,
+            panel_height,
+        )
+        self._trace_overlay.raise_()
+
+    @QtCore.Slot(object)
+    def _on_plot_view_resized(self, _view_box: object) -> None:
+        self._update_trace_panel_geometry()
+
     def set_pane(self, pane: PlotPane, group_options: Iterable[str], pane_color: str) -> None:
         self._pane = pane
         self._pane_color = pane_color
@@ -239,6 +506,7 @@ class _PlotPaneWidget(QtWidgets.QFrame):
 
         self._refresh_active_indicator()
         self._sync_trace_rows()
+        self._update_trace_panel_visibility()
 
     def set_follow_live(self, follow_live: bool) -> None:
         self._follow_button.blockSignals(True)
@@ -293,6 +561,10 @@ class _PlotPaneWidget(QtWidgets.QFrame):
 
     def set_y_auto_range(self, enabled: bool) -> None:
         self._plot_widget.enableAutoRange(axis=pg.ViewBox.YAxis, enable=enabled)
+
+    def resume_y_auto_range(self) -> None:
+        self.set_y_auto_range(True)
+        self._plot_widget.getViewBox().updateAutoRange()
 
     def _sync_trace_rows(self) -> None:
         wanted_keys = {trace.key for trace in self._pane.traces}
@@ -381,11 +653,13 @@ class _PlotPaneWidget(QtWidgets.QFrame):
             checkbox.blockSignals(True)
             checkbox.setChecked(trace.visible)
             checkbox.blockSignals(False)
-            label.setText(trace.display_label)
-            label.setToolTip(trace.display_label)
+            label.setText(trace.field)
+            label.setToolTip(trace.field)
             color_button.setStyleSheet(
                 f"background-color: {trace.color}; border: 1px solid #2a3240; border-radius: 4px;"
             )
+
+        self._update_trace_panel_visibility()
 
     def set_trace_status(self, trace: PlotTrace, value: object | None, unit: str) -> None:
         row = self._trace_rows.get(trace.key)
@@ -593,6 +867,14 @@ class _PlotPaneWidget(QtWidgets.QFrame):
         plot_widget = getattr(self, "_plot_widget", None)
         viewport = plot_widget.viewport() if plot_widget is not None else None
         source_widget = watched if isinstance(watched, QtWidgets.QWidget) else None
+        plot_host = getattr(self, "_plot_host", None)
+        trace_resize_grip = getattr(self, "_trace_resize_grip", None)
+        if (
+            plot_host is not None
+            and watched is plot_host
+            and event.type() in {QtCore.QEvent.Type.Resize, QtCore.QEvent.Type.Show}
+        ):
+            self._update_trace_panel_geometry()
         if (
             plot_widget is not None
             and watched in {plot_widget, viewport}
@@ -630,6 +912,21 @@ class _PlotPaneWidget(QtWidgets.QFrame):
             QtCore.QEvent.Type.FocusIn,
         }:
             self.activated.emit(self._pane.id)
+        if watched is trace_resize_grip and isinstance(event, QtGui.QMouseEvent):
+            if event.type() == QtCore.QEvent.Type.MouseButtonPress and event.button() == QtCore.Qt.MouseButton.LeftButton:
+                if self._start_trace_panel_resize(event.globalPosition().y()):
+                    event.accept()
+                    return True
+            if event.type() == QtCore.QEvent.Type.MouseMove:
+                if self._update_trace_panel_resize(event.globalPosition().y()):
+                    event.accept()
+                    return True
+            if event.type() == QtCore.QEvent.Type.MouseButtonRelease and event.button() == QtCore.Qt.MouseButton.LeftButton:
+                self._finish_trace_panel_resize(commit=True)
+                event.accept()
+                return True
+        if watched is trace_resize_grip and event.type() == QtCore.QEvent.Type.UngrabMouse:
+            self._finish_trace_panel_resize(commit=False)
         return super().eventFilter(watched, event)
 
 
@@ -685,7 +982,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
 
     def set_workspace(self, workspace: PlotWorkspace | None) -> None:
         self._workspace = workspace
-        self._sync_widgets()
+        self._sync_widgets(preserve_current_sizes=False)
 
     def add_pane(self) -> None:
         if self._workspace is None:
@@ -707,13 +1004,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         if active is None:
             return
         next_index = len(self._workspace.panes) + 1
-        duplicate = PlotPane(
-            id=f"pane-{next_index}",
-            title=f"{active.title} Copy",
-            x_group=active.x_group,
-            traces=active.traces,
-            size=active.size,
-        )
+        duplicate = replace(active, id=f"pane-{next_index}", title=f"{active.title} Copy")
         self._replace_workspace(
             PlotWorkspace(
                 device=self._workspace.device,
@@ -784,13 +1075,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
             return
         if any(trace.stream == stream and trace.field == field for trace in active.traces):
             return
-        updated = PlotPane(
-            id=active.id,
-            title=active.title,
-            x_group=active.x_group,
-            traces=active.traces + (PlotTrace(stream=stream, field=field, color=color),),
-            size=active.size,
-        )
+        updated = replace(active, traces=active.traces + (PlotTrace(stream=stream, field=field, color=color),))
         self._replace_pane(updated)
 
     def refresh_data(self, runtime: DashboardRuntime, device: str | None) -> None:
@@ -849,18 +1134,23 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 return pane
         return self._workspace.panes[0]
 
-    def _sync_widgets(self) -> None:
+    def _sync_widgets(self, *, preserve_current_sizes: bool = True) -> None:
         workspace = self._workspace
-        size_by_id = self._capture_sizes()
+        size_by_id = self._capture_sizes() if preserve_current_sizes else {}
         self._state_label.setVisible(workspace is None or not workspace.panes)
         if workspace is None:
             self._state_label.setText("No plot workspace loaded")
             for pane_id, widget in list(self._pane_widgets.items()):
                 self._remove_pane_widget(pane_id, widget)
             self._pane_order = []
+            self._group_leaders = {}
             return
         if not workspace.panes:
             self._state_label.setText("No panes configured for this device")
+            for pane_id, widget in list(self._pane_widgets.items()):
+                self._remove_pane_widget(pane_id, widget)
+            self._pane_order = []
+            self._group_leaders = {}
             return
         self._state_label.setVisible(False)
 
@@ -884,6 +1174,8 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 widget.move_up_requested.connect(self._on_move_up_requested)
                 widget.move_down_requested.connect(self._on_move_down_requested)
                 widget.duplicate_requested.connect(self._on_duplicate_requested)
+                widget.trace_panel_visibility_changed.connect(self._on_trace_panel_visibility_changed)
+                widget.trace_panel_height_changed.connect(self._on_trace_panel_height_changed)
                 widget.trace_visibility_changed.connect(self._on_trace_visibility_changed)
                 widget.trace_remove_requested.connect(self._on_trace_removed)
                 widget.trace_color_changed.connect(self._on_trace_color_changed)
@@ -936,11 +1228,8 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         if not size_by_id:
             return workspace
         panes = tuple(
-            PlotPane(
-                id=pane.id,
-                title=pane.title,
-                x_group=pane.x_group,
-                traces=pane.traces,
+            replace(
+                pane,
                 size=size_by_id.get(pane.id, pane.size),
             )
             for pane in workspace.panes
@@ -1068,22 +1357,14 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         pane = self._pane_by_id(pane_id)
         if pane is None:
             return
-        self._replace_pane(PlotPane(id=pane.id, title=title, x_group=pane.x_group, traces=pane.traces, size=pane.size))
+        self._replace_pane(replace(pane, title=title))
 
     @QtCore.Slot(str, str)
     def _on_x_group_changed(self, pane_id: str, group_name: str) -> None:
         pane = self._pane_by_id(pane_id)
         if pane is None:
             return
-        self._replace_pane(
-            PlotPane(
-                id=pane.id,
-                title=pane.title,
-                x_group=group_name.strip() or DEFAULT_X_GROUP,
-                traces=pane.traces,
-                size=pane.size,
-            )
-        )
+        self._replace_pane(replace(pane, x_group=group_name.strip() or DEFAULT_X_GROUP))
 
     @QtCore.Slot(str, bool)
     def _on_follow_toggled(self, pane_id: str, follow_live: bool) -> None:
@@ -1097,6 +1378,8 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
             current_x_range = widget.current_x_range()
             if current_x_range is not None:
                 state.span_us = self._clamp_follow_span(current_x_range[1] - current_x_range[0])
+            if follow_live:
+                widget.resume_y_auto_range()
         state.span_locked = True
         for group_pane in self._workspace.panes if self._workspace is not None else ():
             if group_pane.x_group == pane.x_group:
@@ -1126,6 +1409,20 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         self._on_pane_activated(pane_id)
         self.duplicate_active_pane()
 
+    @QtCore.Slot(str, bool)
+    def _on_trace_panel_visibility_changed(self, pane_id: str, visible: bool) -> None:
+        pane = self._pane_by_id(pane_id)
+        if pane is None or pane.trace_panel_visible == visible:
+            return
+        self._replace_pane(replace(pane, trace_panel_visible=visible))
+
+    @QtCore.Slot(str, int)
+    def _on_trace_panel_height_changed(self, pane_id: str, height: int) -> None:
+        pane = self._pane_by_id(pane_id)
+        if pane is None or pane.trace_panel_height == height:
+            return
+        self._replace_pane(replace(pane, trace_panel_height=height))
+
     @QtCore.Slot(str, str, str, bool)
     def _on_trace_visibility_changed(self, pane_id: str, stream: str, field: str, visible: bool) -> None:
         pane = self._pane_by_id(pane_id)
@@ -1145,7 +1442,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 )
             else:
                 traces.append(trace)
-        self._replace_pane(PlotPane(id=pane.id, title=pane.title, x_group=pane.x_group, traces=tuple(traces), size=pane.size))
+        self._replace_pane(replace(pane, traces=tuple(traces)))
 
     @QtCore.Slot(str, str, str)
     def _on_trace_removed(self, pane_id: str, stream: str, field: str) -> None:
@@ -1153,7 +1450,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
         if pane is None:
             return
         traces = tuple(trace for trace in pane.traces if not (trace.stream == stream and trace.field == field))
-        self._replace_pane(PlotPane(id=pane.id, title=pane.title, x_group=pane.x_group, traces=traces, size=pane.size))
+        self._replace_pane(replace(pane, traces=traces))
 
     @QtCore.Slot(str, str, str, str)
     def _on_trace_color_changed(self, pane_id: str, stream: str, field: str, color: str) -> None:
@@ -1174,7 +1471,7 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
                 )
             else:
                 traces.append(trace)
-        self._replace_pane(PlotPane(id=pane.id, title=pane.title, x_group=pane.x_group, traces=tuple(traces), size=pane.size))
+        self._replace_pane(replace(pane, traces=tuple(traces)))
 
     @QtCore.Slot(str)
     def _on_autoscale_requested(self, pane_id: str) -> None:
@@ -1237,11 +1534,8 @@ class PlotWorkspaceWidget(QtWidgets.QWidget):
             if size != pane.size:
                 changed = True
             panes.append(
-                PlotPane(
-                    id=pane.id,
-                    title=pane.title,
-                    x_group=pane.x_group,
-                    traces=pane.traces,
+                replace(
+                    pane,
                     size=size,
                 )
             )

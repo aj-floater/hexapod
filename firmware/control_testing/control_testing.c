@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
@@ -164,8 +165,16 @@ enum {
         CONTROL_TESTING_SERVO_USER_DATA(servo_index, CONTROL_TESTING_SERVO_PARAM_HOLD_MAX_DUTY), \
     }
 
+typedef enum {
+    CONTROL_TESTING_COMMAND_STATE_CUSTOM = 0,
+    CONTROL_TESTING_COMMAND_STATE_LINK_BC,
+    CONTROL_TESTING_COMMAND_STATE_ALL_HOLD,
+    CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL,
+} ControlTestingCommandState;
+
 typedef struct {
     bool status_led_on;
+    ControlTestingCommandState command_state;
     Servo servos[CONTROL_TESTING_SERVO_COUNT];
     repeating_timer_t pid_timer;
     absolute_time_t next_telemetry_at;
@@ -175,6 +184,44 @@ typedef struct {
 static bool control_testing_pid_callback(repeating_timer_t *rt);
 static void control_testing_pid_tick(ControlTestingApp *app);
 static void control_testing_emit_telemetry(ControlTestingApp *app);
+static void control_testing_apply_servo_bc_link(ControlTestingApp *app);
+static void control_testing_set_command_state(
+    ControlTestingApp *app,
+    ControlTestingCommandState state
+);
+static const char *control_testing_command_state_name(ControlTestingCommandState state);
+static bool control_testing_write_command_state_result(
+    char *out_result_json,
+    size_t out_result_json_size,
+    ControlTestingCommandState state
+);
+static DevlinkSerialCommandStatus handle_cmd_mode_link_bc(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_mode_all_hold(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_mode_all_manual(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
 static bool control_testing_param_get(
     void *context,
     const DevlinkSerialParamDescriptor *param,
@@ -323,11 +370,38 @@ static const ServoConfig g_control_testing_servo_configs[CONTROL_TESTING_SERVO_C
     },
 };
 
+static const DevlinkSerialCommandDescriptor g_control_testing_commands[] = {
+    {
+        .name = "servo.mode.link_bc",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_mode_link_bc,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "servo.mode.all_hold",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_mode_all_hold,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "servo.mode.all_manual",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_mode_all_manual,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+};
+
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.7.0",
-    .commands = NULL,
-    .command_count = 0u,
+    .firmware = "0.8.0",
+    .commands = g_control_testing_commands,
+    .command_count = count_of(g_control_testing_commands),
     .streams = g_control_testing_streams,
     .stream_count = count_of(g_control_testing_streams),
     .params = g_control_testing_params,
@@ -406,6 +480,7 @@ static void control_testing_init(ControlTestingApp *app) {
     adc_input_system_init();
 
     app->status_led_on = false;
+    app->command_state = CONTROL_TESTING_COMMAND_STATE_CUSTOM;
     for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
         servo_init(&app->servos[servo_index], &g_control_testing_servo_configs[servo_index]);
     }
@@ -426,6 +501,91 @@ static void control_testing_init(ControlTestingApp *app) {
 // Converts angle tenths to float degrees.
 static float control_testing_deg_tenths_to_f32(uint16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
+}
+
+// Mirrors servo B's measured position into servo C's hold target.
+static void control_testing_apply_servo_bc_link(ControlTestingApp *app) {
+    const Servo *servo_b = NULL;
+    Servo *servo_c = NULL;
+    float servo_b_angle_lp_deg = 0.0f;
+
+    hard_assert(app != NULL);
+
+    servo_b = control_testing_get_servo_const(app, CONTROL_TESTING_SERVO_B);
+    servo_c = control_testing_get_servo(app, CONTROL_TESTING_SERVO_C);
+    hard_assert(servo_b != NULL);
+    hard_assert(servo_c != NULL);
+
+    servo_b_angle_lp_deg = control_testing_deg_tenths_to_f32(
+        servo_b->telemetry.angle_lp_deg_tenths
+    );
+    servo_c->settings.hold_target_deg = servo_b_angle_lp_deg;
+}
+
+// Applies one of the high-level device command states.
+static void control_testing_set_command_state(
+    ControlTestingApp *app,
+    ControlTestingCommandState state
+) {
+    hard_assert(app != NULL);
+
+    app->command_state = state;
+
+    switch (state) {
+        case CONTROL_TESTING_COMMAND_STATE_LINK_BC:
+            servo_set_control_mode(&app->servos[CONTROL_TESTING_SERVO_A], CONTROL_MODE_MANUAL);
+            servo_set_control_mode(&app->servos[CONTROL_TESTING_SERVO_B], CONTROL_MODE_MANUAL);
+            servo_set_control_mode(&app->servos[CONTROL_TESTING_SERVO_C], CONTROL_MODE_HOLD);
+            control_testing_apply_servo_bc_link(app);
+            return;
+        case CONTROL_TESTING_COMMAND_STATE_ALL_HOLD:
+            for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+                servo_set_control_mode(&app->servos[servo_index], CONTROL_MODE_HOLD);
+            }
+            return;
+        case CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL:
+            for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+                servo_set_control_mode(&app->servos[servo_index], CONTROL_MODE_MANUAL);
+            }
+            return;
+        case CONTROL_TESTING_COMMAND_STATE_CUSTOM:
+        default:
+            return;
+    }
+}
+
+// Returns a stable name for the active command state.
+static const char *control_testing_command_state_name(ControlTestingCommandState state) {
+    switch (state) {
+        case CONTROL_TESTING_COMMAND_STATE_LINK_BC:
+            return "link_bc";
+        case CONTROL_TESTING_COMMAND_STATE_ALL_HOLD:
+            return "all_hold";
+        case CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL:
+            return "all_manual";
+        case CONTROL_TESTING_COMMAND_STATE_CUSTOM:
+        default:
+            return "custom";
+    }
+}
+
+// Formats the active command state for command responses.
+static bool control_testing_write_command_state_result(
+    char *out_result_json,
+    size_t out_result_json_size,
+    ControlTestingCommandState state
+) {
+    int written = 0;
+
+    hard_assert(out_result_json != NULL);
+
+    written = snprintf(
+        out_result_json,
+        out_result_json_size,
+        "{\"state\":\"%s\"}",
+        control_testing_command_state_name(state)
+    );
+    return written >= 0 && (size_t)written < out_result_json_size;
 }
 
 // Returns the current parameter value.
@@ -565,12 +725,95 @@ static bool control_testing_param_set(
     }
 }
 
+// Puts the device into BC-link mode. Later mode commands replace this state.
+static DevlinkSerialCommandStatus handle_cmd_mode_link_bc(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    control_testing_set_command_state(app, CONTROL_TESTING_COMMAND_STATE_LINK_BC);
+    if (!control_testing_write_command_state_result(
+            out_result_json,
+            out_result_json_size,
+            app->command_state
+        )) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Sets every servo to hold mode.
+static DevlinkSerialCommandStatus handle_cmd_mode_all_hold(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+    control_testing_set_command_state(app, CONTROL_TESTING_COMMAND_STATE_ALL_HOLD);
+    if (!control_testing_write_command_state_result(
+            out_result_json,
+            out_result_json_size,
+            app->command_state
+        )) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Sets every servo to manual mode.
+static DevlinkSerialCommandStatus handle_cmd_mode_all_manual(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+    control_testing_set_command_state(app, CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL);
+    if (!control_testing_write_command_state_result(
+            out_result_json,
+            out_result_json_size,
+            app->command_state
+        )) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
 // Ticks all servos once.
 static void control_testing_pid_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
 
     for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
         servo_tick(&app->servos[servo_index]);
+    }
+
+    if (app->command_state == CONTROL_TESTING_COMMAND_STATE_LINK_BC) {
+        control_testing_apply_servo_bc_link(app);
     }
 }
 
