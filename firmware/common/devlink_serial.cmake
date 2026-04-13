@@ -19,6 +19,7 @@ function(devlink_pio_uart_rx_enable_for_target target_name)
 
     target_link_libraries(${target_name}
         hardware_clocks
+        hardware_irq
         hardware_pio
     )
 

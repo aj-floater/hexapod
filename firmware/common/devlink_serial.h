@@ -88,10 +88,17 @@ typedef struct {
     const char *unit;
 } DevlinkSerialStreamFieldDescriptor;
 
+typedef enum {
+    DEVLINK_SERIAL_SAMPLE_FORMAT_JSON = 0,
+    DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY
+} DevlinkSerialSampleFormat;
+
 typedef struct {
     const char *name;
     const DevlinkSerialStreamFieldDescriptor *fields;
     size_t field_count;
+    uint8_t id;
+    DevlinkSerialSampleFormat sample_format;
 } DevlinkSerialStreamDescriptor;
 
 typedef struct {

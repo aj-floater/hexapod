@@ -23,43 +23,44 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico CACHE STRING "Board type" FORCE)
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/../common/devlink_serial.cmake)
 
-project(status_led_demo C CXX ASM)
+project(debug-2 C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
+add_executable(debug-2
+    debug-2.c
+    debug_app.c
+)
 
-add_executable(status_led_demo status_led_demo.c )
-devlink_serial_enable_for_target(status_led_demo)
-devlink_pio_uart_rx_enable_for_target(status_led_demo)
+devlink_serial_enable_for_target(debug-2)
+devlink_pio_uart_rx_enable_for_target(debug-2)
 
-pico_set_program_name(status_led_demo "status_led_demo")
-pico_set_program_version(status_led_demo "0.1")
+pico_set_program_name(debug-2 "debug-2")
+pico_set_program_version(debug-2 "0.1")
 
-target_compile_definitions(status_led_demo PRIVATE
+target_compile_definitions(debug-2 PRIVATE
     PICO_DEFAULT_UART=1
     PICO_DEFAULT_UART_TX_PIN=4
     PICO_DEFAULT_UART_BAUD_RATE=115200
 )
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(status_led_demo 1)
-pico_enable_stdio_usb(status_led_demo 0)
+pico_enable_stdio_uart(debug-2 1)
+pico_enable_stdio_usb(debug-2 0)
 
-# Add the standard library to the build
-target_link_libraries(status_led_demo
-        pico_stdlib)
-
-# Add the standard include files to the build
-target_include_directories(status_led_demo PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}
+target_link_libraries(debug-2
+    pico_stdlib
 )
 
-pico_add_extra_outputs(status_led_demo)
+target_include_directories(debug-2 PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/../common
+)
+
+pico_add_extra_outputs(debug-2)

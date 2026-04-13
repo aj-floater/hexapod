@@ -52,7 +52,6 @@ pico_set_program_version(control_testing "0.6.0")
 target_compile_definitions(control_testing PRIVATE
     PICO_DEFAULT_UART=1
     PICO_DEFAULT_UART_TX_PIN=4
-    PICO_DEFAULT_UART_RX_PIN=3
     PICO_DEFAULT_UART_BAUD_RATE=115200
 )
 

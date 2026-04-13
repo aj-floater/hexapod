@@ -51,8 +51,8 @@ typedef struct {
     uint16_t adc_raw;
     uint16_t adc_avg_raw;
     uint16_t adc_lp_raw;
-    uint16_t angle_avg_deg_tenths;
-    uint16_t angle_lp_deg_tenths;
+    int16_t angle_avg_deg_tenths;
+    int16_t angle_lp_deg_tenths;
     uint8_t motor_state;
     uint8_t motor_drive_pct;
     int16_t hold_output_pct;
