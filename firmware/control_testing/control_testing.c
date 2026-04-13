@@ -24,6 +24,8 @@
 #define TELEMETRY_PERIOD_MS 40u
 #define CONTROL_TESTING_SERVO_COUNT 3u
 #define CONTROL_TESTING_SERVO_USER_DATA_BASE ((uintptr_t)0x100u)
+#define CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS 50u
+#define CONTROL_TESTING_TEACH_SAMPLE_CAPACITY 200u
 
 enum {
     CONTROL_TESTING_SERVO_A = 0,
@@ -173,9 +175,32 @@ typedef enum {
 } ControlTestingCommandState;
 
 typedef struct {
+    int16_t servo_angle_deg_tenths[CONTROL_TESTING_SERVO_COUNT];
+} ControlTestingTeachSample;
+
+typedef enum {
+    CONTROL_TESTING_TEACH_MODE_IDLE = 0,
+    CONTROL_TESTING_TEACH_MODE_RECORDING,
+    CONTROL_TESTING_TEACH_MODE_RECORDED,
+    CONTROL_TESTING_TEACH_MODE_PLAYING,
+} ControlTestingTeachMode;
+
+typedef struct {
+    ControlTestingTeachMode mode;
+    bool waiting_for_alignment;
+    bool playback_interpolate;
+    uint16_t sample_count;
+    uint16_t playback_index;
+    absolute_time_t playback_segment_started_at;
+    absolute_time_t next_sample_at;
+    ControlTestingTeachSample samples[CONTROL_TESTING_TEACH_SAMPLE_CAPACITY];
+} ControlTestingTeachState;
+
+typedef struct {
     bool status_led_on;
     ControlTestingCommandState command_state;
     Servo servos[CONTROL_TESTING_SERVO_COUNT];
+    ControlTestingTeachState teach;
     repeating_timer_t pid_timer;
     absolute_time_t next_telemetry_at;
     uint32_t stream_sample_seq[CONTROL_TESTING_STREAM_COUNT];
@@ -203,11 +228,38 @@ static void control_testing_set_command_state(
     ControlTestingCommandState state
 );
 static const char *control_testing_command_state_name(ControlTestingCommandState state);
+static const char *control_testing_teach_mode_name(ControlTestingTeachMode mode);
 static bool control_testing_write_command_state_result(
     char *out_result_json,
     size_t out_result_json_size,
     ControlTestingCommandState state
 );
+static bool control_testing_write_teach_status_result(
+    char *out_result_json,
+    size_t out_result_json_size,
+    const ControlTestingApp *app
+);
+static void control_testing_stop_playback(ControlTestingApp *app);
+static void control_testing_cancel_playback_for_override(ControlTestingApp *app);
+static void control_testing_start_recording(ControlTestingApp *app);
+static void control_testing_stop_recording(ControlTestingApp *app);
+static bool control_testing_start_playback(
+    ControlTestingApp *app,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static void control_testing_capture_teach_sample(ControlTestingApp *app);
+static void control_testing_apply_teach_sample(
+    ControlTestingApp *app,
+    const ControlTestingTeachSample *sample
+);
+static void control_testing_apply_interpolated_teach_sample(
+    ControlTestingApp *app,
+    const ControlTestingTeachSample *start_sample,
+    const ControlTestingTeachSample *end_sample,
+    uint32_t elapsed_ms
+);
+static void control_testing_update_teach(ControlTestingApp *app);
 static DevlinkSerialCommandStatus handle_cmd_mode_link_bc(
     const DevlinkSerialDeviceDescriptor *device,
     void *context,
@@ -227,6 +279,69 @@ static DevlinkSerialCommandStatus handle_cmd_mode_all_hold(
     const char **out_error_message
 );
 static DevlinkSerialCommandStatus handle_cmd_mode_all_manual(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_record_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_record_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_play_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_play_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_status(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_play_interpolate_on(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+);
+static DevlinkSerialCommandStatus handle_cmd_teach_play_interpolate_off(
     const DevlinkSerialDeviceDescriptor *device,
     void *context,
     const DevlinkSerialCommand *command,
@@ -450,11 +565,67 @@ static const DevlinkSerialCommandDescriptor g_control_testing_commands[] = {
         .success_event_name = NULL,
         .success_event_severity = NULL,
     },
+    {
+        .name = "teach.record.start",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_record_start,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.record.stop",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_record_stop,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.play.start",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_play_start,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.play.stop",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_play_stop,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.status",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_status,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.play.interpolate.on",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_play_interpolate_on,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
+    {
+        .name = "teach.play.interpolate.off",
+        .args = NULL,
+        .arg_count = 0u,
+        .handler = handle_cmd_teach_play_interpolate_off,
+        .success_event_name = NULL,
+        .success_event_severity = NULL,
+    },
 };
 
 static const DevlinkSerialDeviceDescriptor g_control_testing_device = {
     .device = "control_testing",
-    .firmware = "0.8.0",
+    .firmware = "0.9.0",
     .commands = g_control_testing_commands,
     .command_count = count_of(g_control_testing_commands),
     .streams = g_control_testing_streams,
@@ -536,6 +707,13 @@ static void control_testing_init(ControlTestingApp *app) {
 
     app->status_led_on = false;
     app->command_state = CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL;
+    app->teach.mode = CONTROL_TESTING_TEACH_MODE_IDLE;
+    app->teach.waiting_for_alignment = false;
+    app->teach.playback_interpolate = false;
+    app->teach.sample_count = 0u;
+    app->teach.playback_index = 0u;
+    app->teach.playback_segment_started_at = now;
+    app->teach.next_sample_at = now;
     for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
         servo_init(&app->servos[servo_index], &g_control_testing_servo_configs[servo_index]);
     }
@@ -595,6 +773,10 @@ static void control_testing_set_command_state(
 ) {
     hard_assert(app != NULL);
 
+    if (app->teach.mode == CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        control_testing_cancel_playback_for_override(app);
+    }
+
     app->command_state = state;
 
     switch (state) {
@@ -635,6 +817,21 @@ static const char *control_testing_command_state_name(ControlTestingCommandState
     }
 }
 
+// Returns a stable name for the teach engine state.
+static const char *control_testing_teach_mode_name(ControlTestingTeachMode mode) {
+    switch (mode) {
+        case CONTROL_TESTING_TEACH_MODE_RECORDING:
+            return "recording";
+        case CONTROL_TESTING_TEACH_MODE_RECORDED:
+            return "recorded";
+        case CONTROL_TESTING_TEACH_MODE_PLAYING:
+            return "playing";
+        case CONTROL_TESTING_TEACH_MODE_IDLE:
+        default:
+            return "idle";
+    }
+}
+
 // Formats the active command state for command responses.
 static bool control_testing_write_command_state_result(
     char *out_result_json,
@@ -652,6 +849,258 @@ static bool control_testing_write_command_state_result(
         control_testing_command_state_name(state)
     );
     return written >= 0 && (size_t)written < out_result_json_size;
+}
+
+// Formats one teach status response for command handlers.
+static bool control_testing_write_teach_status_result(
+    char *out_result_json,
+    size_t out_result_json_size,
+    const ControlTestingApp *app
+) {
+    uint32_t duration_ms = 0u;
+    int written = 0;
+
+    hard_assert(out_result_json != NULL);
+    hard_assert(app != NULL);
+
+    duration_ms = (uint32_t)app->teach.sample_count * CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS;
+    written = snprintf(
+        out_result_json,
+        out_result_json_size,
+        "{\"mode\":\"%s\",\"samples\":%u,\"capacity\":%u,\"duration_ms\":%lu,"
+        "\"playback_index\":%u,\"waiting_for_alignment\":%s,\"interpolate\":%s}",
+        control_testing_teach_mode_name(app->teach.mode),
+        (unsigned int)app->teach.sample_count,
+        (unsigned int)CONTROL_TESTING_TEACH_SAMPLE_CAPACITY,
+        (unsigned long)duration_ms,
+        (unsigned int)app->teach.playback_index,
+        app->teach.waiting_for_alignment ? "true" : "false",
+        app->teach.playback_interpolate ? "true" : "false"
+    );
+    return written >= 0 && (size_t)written < out_result_json_size;
+}
+
+// Stops active playback and keeps current clip loaded.
+static void control_testing_stop_playback(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    if (app->teach.mode != CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        return;
+    }
+
+    app->teach.mode = (app->teach.sample_count > 0u)
+        ? CONTROL_TESTING_TEACH_MODE_RECORDED
+        : CONTROL_TESTING_TEACH_MODE_IDLE;
+    app->teach.waiting_for_alignment = false;
+    app->teach.playback_index = 0u;
+    app->teach.playback_segment_started_at = get_absolute_time();
+}
+
+// Stops playback before an external command overrides servo behavior.
+static void control_testing_cancel_playback_for_override(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    if (app->teach.mode != CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        return;
+    }
+
+    control_testing_stop_playback(app);
+    app->command_state = CONTROL_TESTING_COMMAND_STATE_CUSTOM;
+}
+
+// Starts a fresh teach recording.
+static void control_testing_start_recording(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    if (app->teach.mode == CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        control_testing_stop_playback(app);
+    }
+
+    app->teach.mode = CONTROL_TESTING_TEACH_MODE_RECORDING;
+    app->teach.waiting_for_alignment = false;
+    app->teach.sample_count = 0u;
+    app->teach.playback_index = 0u;
+    app->teach.playback_segment_started_at = get_absolute_time();
+    app->teach.next_sample_at = get_absolute_time();
+    app->command_state = CONTROL_TESTING_COMMAND_STATE_CUSTOM;
+}
+
+// Stops recording and keeps captured clip available.
+static void control_testing_stop_recording(ControlTestingApp *app) {
+    hard_assert(app != NULL);
+
+    if (app->teach.mode != CONTROL_TESTING_TEACH_MODE_RECORDING) {
+        return;
+    }
+
+    app->teach.mode = (app->teach.sample_count > 0u)
+        ? CONTROL_TESTING_TEACH_MODE_RECORDED
+        : CONTROL_TESTING_TEACH_MODE_IDLE;
+    app->teach.waiting_for_alignment = false;
+    app->teach.playback_index = 0u;
+    app->teach.playback_segment_started_at = get_absolute_time();
+}
+
+// Applies one recorded pose to all hold targets.
+static void control_testing_apply_teach_sample(
+    ControlTestingApp *app,
+    const ControlTestingTeachSample *sample
+) {
+    hard_assert(app != NULL);
+    hard_assert(sample != NULL);
+
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        app->servos[servo_index].settings.hold_target_deg = control_testing_clamp_hold_target_deg(
+            control_testing_deg_tenths_to_f32(sample->servo_angle_deg_tenths[servo_index])
+        );
+    }
+}
+
+// Blends hold targets between two recorded poses over one sample interval.
+static void control_testing_apply_interpolated_teach_sample(
+    ControlTestingApp *app,
+    const ControlTestingTeachSample *start_sample,
+    const ControlTestingTeachSample *end_sample,
+    uint32_t elapsed_ms
+) {
+    float t = 0.0f;
+
+    hard_assert(app != NULL);
+    hard_assert(start_sample != NULL);
+    hard_assert(end_sample != NULL);
+
+    if (elapsed_ms >= CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS) {
+        t = 1.0f;
+    } else {
+        t = (float)elapsed_ms / (float)CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS;
+    }
+
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        float start_deg = control_testing_deg_tenths_to_f32(
+            start_sample->servo_angle_deg_tenths[servo_index]
+        );
+        float end_deg = control_testing_deg_tenths_to_f32(
+            end_sample->servo_angle_deg_tenths[servo_index]
+        );
+        float interpolated_deg = start_deg + ((end_deg - start_deg) * t);
+
+        app->servos[servo_index].settings.hold_target_deg =
+            control_testing_clamp_hold_target_deg(interpolated_deg);
+    }
+}
+
+// Captures one teach sample from filtered measured servo angles.
+static void control_testing_capture_teach_sample(ControlTestingApp *app) {
+    ControlTestingTeachSample *sample = NULL;
+
+    hard_assert(app != NULL);
+
+    if (app->teach.sample_count >= CONTROL_TESTING_TEACH_SAMPLE_CAPACITY) {
+        control_testing_stop_recording(app);
+        return;
+    }
+
+    sample = &app->teach.samples[app->teach.sample_count];
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        sample->servo_angle_deg_tenths[servo_index] = app->servos[servo_index].telemetry.angle_lp_deg_tenths;
+    }
+    app->teach.sample_count++;
+
+    if (app->teach.sample_count >= CONTROL_TESTING_TEACH_SAMPLE_CAPACITY) {
+        control_testing_stop_recording(app);
+    }
+}
+
+// Starts playback immediately from recorded first sample.
+static bool control_testing_start_playback(
+    ControlTestingApp *app,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    hard_assert(app != NULL);
+    hard_assert(out_error_code != NULL);
+    hard_assert(out_error_message != NULL);
+
+    if (app->teach.sample_count == 0u) {
+        *out_error_code = "no_recording";
+        *out_error_message = "no taught motion available";
+        return false;
+    }
+
+    if (app->teach.mode == CONTROL_TESTING_TEACH_MODE_RECORDING) {
+        control_testing_stop_recording(app);
+    }
+
+    for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
+        app->servos[servo_index].settings.hold_target_deg = control_testing_clamp_hold_target_deg(
+            control_testing_deg_tenths_to_f32(app->servos[servo_index].telemetry.angle_lp_deg_tenths)
+        );
+        servo_set_control_mode(&app->servos[servo_index], CONTROL_MODE_HOLD);
+    }
+
+    app->teach.mode = CONTROL_TESTING_TEACH_MODE_PLAYING;
+    app->teach.waiting_for_alignment = false;
+    app->teach.playback_index = 0u;
+    app->teach.playback_segment_started_at = get_absolute_time();
+    control_testing_apply_teach_sample(app, &app->teach.samples[0]);
+    app->teach.next_sample_at = make_timeout_time_ms(CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS);
+    app->command_state = CONTROL_TESTING_COMMAND_STATE_CUSTOM;
+    return true;
+}
+
+// Advances record or playback state machine.
+static void control_testing_update_teach(ControlTestingApp *app) {
+    absolute_time_t now = get_absolute_time();
+
+    hard_assert(app != NULL);
+
+    if (app->teach.mode == CONTROL_TESTING_TEACH_MODE_RECORDING) {
+        if (time_reached(app->teach.next_sample_at)) {
+            control_testing_capture_teach_sample(app);
+            app->teach.next_sample_at = make_timeout_time_ms(CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS);
+        }
+        return;
+    }
+
+    if (app->teach.mode != CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        return;
+    }
+
+    if (app->teach.playback_interpolate && app->teach.playback_index + 1u < app->teach.sample_count) {
+        int64_t elapsed_us = absolute_time_diff_us(app->teach.playback_segment_started_at, now);
+        uint32_t elapsed_ms = 0u;
+
+        if (elapsed_us > 0) {
+            elapsed_ms = (uint32_t)(elapsed_us / 1000);
+        }
+        control_testing_apply_interpolated_teach_sample(
+            app,
+            &app->teach.samples[app->teach.playback_index],
+            &app->teach.samples[app->teach.playback_index + 1u],
+            elapsed_ms
+        );
+    }
+
+    if (!time_reached(app->teach.next_sample_at)) {
+        return;
+    }
+
+    app->teach.playback_index++;
+
+    if (app->teach.playback_index >= app->teach.sample_count) {
+        control_testing_stop_playback(app);
+        return;
+    }
+
+    app->teach.playback_segment_started_at = now;
+    control_testing_apply_teach_sample(app, &app->teach.samples[app->teach.playback_index]);
+
+    if (app->teach.playback_index + 1u >= app->teach.sample_count) {
+        control_testing_stop_playback(app);
+        return;
+    }
+
+    app->teach.next_sample_at = make_timeout_time_ms(CONTROL_TESTING_TEACH_SAMPLE_PERIOD_MS);
 }
 
 // Returns the current parameter value.
@@ -673,7 +1122,6 @@ static bool control_testing_param_get(
         *out_value = DEVLINK_SERIAL_VALUE_BOOL(app->status_led_on);
         return true;
     }
-
     if (!control_testing_decode_servo_user_data(param->user_data, &servo_index, &local_param_id)) {
         return false;
     }
@@ -743,11 +1191,14 @@ static bool control_testing_param_set(
         control_testing_apply_status_led(app);
         return true;
     }
-
     if (!control_testing_decode_servo_user_data(param->user_data, &servo_index, &local_param_id)) {
         *out_error_code = "unknown_param";
         *out_error_message = "unknown parameter";
         return false;
+    }
+
+    if (app->teach.mode == CONTROL_TESTING_TEACH_MODE_PLAYING) {
+        control_testing_cancel_playback_for_override(app);
     }
 
     servo = control_testing_get_servo(app, servo_index);
@@ -870,6 +1321,172 @@ static DevlinkSerialCommandStatus handle_cmd_mode_all_manual(
     return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
 }
 
+// Starts a new teach recording buffer.
+static DevlinkSerialCommandStatus handle_cmd_teach_record_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    control_testing_start_recording(app);
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Stops active recording and keeps clip available.
+static DevlinkSerialCommandStatus handle_cmd_teach_record_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    control_testing_stop_recording(app);
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Starts teach playback from recorded samples.
+static DevlinkSerialCommandStatus handle_cmd_teach_play_start(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+
+    hard_assert(out_error_code != NULL);
+    hard_assert(out_error_message != NULL);
+
+    *out_error_code = NULL;
+    *out_error_message = NULL;
+
+    if (!control_testing_start_playback(app, out_error_code, out_error_message)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Stops teach playback without clearing clip.
+static DevlinkSerialCommandStatus handle_cmd_teach_play_stop(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    control_testing_stop_playback(app);
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Reports current teach engine state.
+static DevlinkSerialCommandStatus handle_cmd_teach_status(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Enables interpolation between recorded playback poses.
+static DevlinkSerialCommandStatus handle_cmd_teach_play_interpolate_on(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    app->teach.playback_interpolate = true;
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
+// Disables interpolation between recorded playback poses.
+static DevlinkSerialCommandStatus handle_cmd_teach_play_interpolate_off(
+    const DevlinkSerialDeviceDescriptor *device,
+    void *context,
+    const DevlinkSerialCommand *command,
+    char *out_result_json,
+    size_t out_result_json_size,
+    const char **out_error_code,
+    const char **out_error_message
+) {
+    ControlTestingApp *app = (ControlTestingApp *)context;
+    (void)device;
+    (void)command;
+    (void)out_error_code;
+    (void)out_error_message;
+
+    app->teach.playback_interpolate = false;
+    if (!control_testing_write_teach_status_result(out_result_json, out_result_json_size, app)) {
+        return DEVLINK_SERIAL_COMMAND_ERROR;
+    }
+    return DEVLINK_SERIAL_COMMAND_OK_WITH_RESULT;
+}
+
 // Ticks all servos once.
 static void control_testing_pid_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
@@ -977,6 +1594,8 @@ static bool control_testing_pid_callback(repeating_timer_t *rt) {
 // Emits telemetry when its deadline expires.
 static void control_testing_tick(ControlTestingApp *app) {
     hard_assert(app != NULL);
+
+    control_testing_update_teach(app);
 
     if (time_reached(app->next_telemetry_at)) {
         control_testing_emit_telemetry(app);

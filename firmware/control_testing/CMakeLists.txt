@@ -47,7 +47,7 @@ devlink_serial_enable_for_target(control_testing)
 devlink_pio_uart_rx_enable_for_target(control_testing)
 
 pico_set_program_name(control_testing "control_testing")
-pico_set_program_version(control_testing "0.6.0")
+pico_set_program_version(control_testing "0.9.0")
 
 target_compile_definitions(control_testing PRIVATE
     PICO_DEFAULT_UART=1
