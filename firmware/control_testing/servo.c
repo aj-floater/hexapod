@@ -5,7 +5,6 @@
 #define SERVO_ADC_AVERAGE_SAMPLE_COUNT 16u
 #define SERVO_ADC_RAW_MIN 0u
 #define SERVO_ADC_RAW_MAX 4080u
-#define SERVO_ADC_MAX_DEG 180u
 #define SERVO_MOTOR_PWM_HZ 20000u
 
 // Clamps raw ADC values to the usable range.
@@ -20,21 +19,51 @@ static uint16_t servo_bound_adc_raw(uint16_t raw_value) {
 }
 
 // Converts tenths of degrees to float degrees.
-static float servo_deg_tenths_to_f32(uint16_t deg_tenths) {
+static float servo_deg_tenths_to_f32(int16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
 }
 
+// Divides with nearest-integer rounding for positive and negative numerators.
+static int32_t servo_divide_round_nearest(int32_t numerator, uint32_t denominator) {
+    hard_assert(denominator != 0u);
+
+    if (numerator >= 0) {
+        return (numerator + (int32_t)(denominator / 2u)) / (int32_t)denominator;
+    }
+    return (numerator - (int32_t)(denominator / 2u)) / (int32_t)denominator;
+}
+
+// Interpolates or extrapolates one angle from a calibration segment.
+static int16_t servo_segment_raw_to_deg_tenths(
+    const ServoCalibrationPoint *upper_point,
+    const ServoCalibrationPoint *lower_point,
+    uint16_t raw_value
+) {
+    int32_t raw_offset = 0;
+    uint32_t raw_span = 0u;
+    uint32_t deg_span_tenths = 0u;
+    int32_t interpolated_deg_tenths = 0;
+
+    hard_assert(upper_point != NULL);
+    hard_assert(lower_point != NULL);
+    hard_assert(upper_point->raw > lower_point->raw);
+
+    raw_offset = (int32_t)upper_point->raw - (int32_t)raw_value;
+    raw_span = (uint32_t)upper_point->raw - (uint32_t)lower_point->raw;
+    deg_span_tenths = ((uint32_t)lower_point->deg - (uint32_t)upper_point->deg) * SERVO_TENTHS_PER_DEG;
+    interpolated_deg_tenths = (int32_t)upper_point->deg * (int32_t)SERVO_TENTHS_PER_DEG
+        + servo_divide_round_nearest(raw_offset * (int32_t)deg_span_tenths, raw_span);
+    hard_assert(interpolated_deg_tenths >= INT16_MIN && interpolated_deg_tenths <= INT16_MAX);
+    return (int16_t)interpolated_deg_tenths;
+}
+
 // Converts one ADC sample into angle tenths.
-static uint16_t servo_adc_raw_to_deg_tenths(
+static int16_t servo_adc_raw_to_deg_tenths(
     const Servo *servo,
     uint16_t raw_value
 ) {
     const ServoCalibrationPoint *upper_point = NULL;
     const ServoCalibrationPoint *lower_point = NULL;
-    uint32_t raw_span = 0u;
-    uint32_t raw_offset = 0u;
-    uint32_t deg_span = 0u;
-    uint32_t interpolated_deg_tenths = 0u;
 
     hard_assert(servo != NULL);
     hard_assert(servo->calibration_points != NULL);
@@ -43,12 +72,17 @@ static uint16_t servo_adc_raw_to_deg_tenths(
     raw_value = servo_bound_adc_raw(raw_value);
 
     if (raw_value >= servo->calibration_points[0].raw) {
-        return (uint16_t)(servo->calibration_points[0].deg * SERVO_TENTHS_PER_DEG);
+        return servo_segment_raw_to_deg_tenths(
+            &servo->calibration_points[0],
+            &servo->calibration_points[1],
+            raw_value
+        );
     }
     if (raw_value <= servo->calibration_points[servo->calibration_point_count - 1u].raw) {
-        return (uint16_t)(
-            servo->calibration_points[servo->calibration_point_count - 1u].deg
-            * SERVO_TENTHS_PER_DEG
+        return servo_segment_raw_to_deg_tenths(
+            &servo->calibration_points[servo->calibration_point_count - 2u],
+            &servo->calibration_points[servo->calibration_point_count - 1u],
+            raw_value
         );
     }
 
@@ -57,16 +91,15 @@ static uint16_t servo_adc_raw_to_deg_tenths(
         lower_point = &servo->calibration_points[point_index + 1u];
 
         if (raw_value <= upper_point->raw && raw_value >= lower_point->raw) {
-            raw_span = (uint32_t)(upper_point->raw - lower_point->raw);
-            raw_offset = (uint32_t)(upper_point->raw - raw_value);
-            deg_span = (uint32_t)(lower_point->deg - upper_point->deg);
-            interpolated_deg_tenths = (uint32_t)(upper_point->deg * SERVO_TENTHS_PER_DEG)
-                + ((raw_offset * deg_span * SERVO_TENTHS_PER_DEG) + (raw_span / 2u)) / raw_span;
-            return (uint16_t)interpolated_deg_tenths;
+            return servo_segment_raw_to_deg_tenths(upper_point, lower_point, raw_value);
         }
     }
 
-    return (uint16_t)(SERVO_ADC_MAX_DEG * SERVO_TENTHS_PER_DEG);
+    return servo_segment_raw_to_deg_tenths(
+        &servo->calibration_points[servo->calibration_point_count - 2u],
+        &servo->calibration_points[servo->calibration_point_count - 1u],
+        raw_value
+    );
 }
 
 // Updates the low-pass ADC sample.

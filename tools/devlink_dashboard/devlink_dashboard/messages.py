@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import struct
 from dataclasses import dataclass, field
 from typing import Mapping, TypeAlias
 
 PROTOCOL_NAME = "devlink"
 PROTOCOL_VERSION = 1
+BINARY_SAMPLE_MARKER = 0xA5
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -102,6 +104,8 @@ class StreamFieldSpec:
 class StreamSpec:
     name: str
     fields: tuple[StreamFieldSpec, ...]
+    id: int | None = None
+    sample_format: str = "json"
 
 
 @dataclass(frozen=True)
@@ -201,9 +205,105 @@ Message: TypeAlias = (
 )
 
 
+_LAST_DEVICE: str | None = None
+_STREAM_REGISTRY: dict[tuple[str, int], StreamSpec] = {}
+
+
+def _register_stream_specs(device: str, streams: tuple[StreamSpec, ...]) -> None:
+    for stream in streams:
+        if stream.id is not None:
+            _STREAM_REGISTRY[(device, stream.id)] = stream
+
+
+def _resolve_binary_stream(stream_id: int) -> tuple[str, StreamSpec]:
+    if _LAST_DEVICE is not None:
+        stream = _STREAM_REGISTRY.get((_LAST_DEVICE, stream_id))
+        if stream is not None:
+            return _LAST_DEVICE, stream
+
+    matches = [(device, stream) for (device, sid), stream in _STREAM_REGISTRY.items() if sid == stream_id]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ProtocolError(f"unknown binary stream id {stream_id}")
+    raise ProtocolError(f"ambiguous binary stream id {stream_id}")
+
+
+def _read_scalar_from_payload(type_name: str, payload: bytes, offset: int) -> tuple[JSONScalar, int]:
+    if type_name == "bool":
+        if offset + 1 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return payload[offset] != 0, offset + 1
+    if type_name == "u8":
+        if offset + 1 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return payload[offset], offset + 1
+    if type_name == "u16":
+        if offset + 2 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return struct.unpack_from("<H", payload, offset)[0], offset + 2
+    if type_name == "u32":
+        if offset + 4 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return struct.unpack_from("<I", payload, offset)[0], offset + 4
+    if type_name == "i16":
+        if offset + 2 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return struct.unpack_from("<h", payload, offset)[0], offset + 2
+    if type_name == "i32":
+        if offset + 4 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return struct.unpack_from("<i", payload, offset)[0], offset + 4
+    if type_name == "f32":
+        if offset + 4 > len(payload):
+            raise ProtocolError("binary sample payload too short")
+        return struct.unpack_from("<f", payload, offset)[0], offset + 4
+    raise ProtocolError(f"unsupported scalar type {type_name}")
+
+
+def _parse_binary_sample_line(line: bytes) -> SampleMessage:
+    if len(line) < 15:
+        raise ProtocolError("binary sample frame too short")
+    if line[0] != BINARY_SAMPLE_MARKER:
+        raise ProtocolError("invalid binary sample marker")
+
+    version = line[1]
+    if version != PROTOCOL_VERSION:
+        raise ProtocolError(f"unsupported protocol version {version}")
+
+    stream_id = line[2]
+    seq = struct.unpack_from("<I", line, 3)[0]
+    t_us = struct.unpack_from("<Q", line, 7)[0]
+    payload = line[15:]
+
+    device, stream = _resolve_binary_stream(stream_id)
+    data: dict[str, JSONScalar] = {}
+    offset = 0
+    for field in stream.fields:
+        value, offset = _read_scalar_from_payload(field.type, payload, offset)
+        data[field.name] = value
+
+    if offset != len(payload):
+        raise ProtocolError("binary sample payload length mismatch")
+
+    return SampleMessage(
+        version=version,
+        device=device,
+        stream=stream.name,
+        seq=seq,
+        t_us=t_us,
+        data=data,
+    )
+
+
 def parse_line_resilient(line: str | bytes) -> Message:
     if isinstance(line, bytes):
-        text = line.decode("utf-8", errors="replace")
+        payload = line.strip(b"\r\n")
+        if not payload:
+            raise ProtocolError("empty line")
+        if payload[0] == BINARY_SAMPLE_MARKER:
+            return _parse_binary_sample_line(payload)
+        text = payload.decode("utf-8", errors="replace")
     else:
         text = line
 
@@ -265,9 +365,27 @@ def _parse_stream_field_spec(raw: object) -> StreamFieldSpec:
 def _parse_stream_spec(raw: object) -> StreamSpec:
     if not isinstance(raw, Mapping):
         raise ProtocolError("stream spec must be an object")
+    stream_id_raw = raw.get("id")
+    sample_format_raw = raw.get("sample_format")
+
+    if stream_id_raw is not None:
+        if isinstance(stream_id_raw, bool) or not isinstance(stream_id_raw, int):
+            raise ProtocolError("stream.id must be an integer")
+        if stream_id_raw < 0 or stream_id_raw > 255:
+            raise ProtocolError("stream.id must be in [0,255]")
+
+    if sample_format_raw is None:
+        sample_format = "json"
+    else:
+        if not isinstance(sample_format_raw, str):
+            raise ProtocolError("stream.sample_format must be a string")
+        sample_format = sample_format_raw
+
     return StreamSpec(
         name=_require_str(raw, "name"),
         fields=tuple(_parse_stream_field_spec(item) for item in _require_list(raw, "fields")),
+        id=stream_id_raw,
+        sample_format=sample_format,
     )
 
 
@@ -331,16 +449,21 @@ def parse_line(line: str | bytes) -> Message:
         firmware = _require_str(raw, "firmware")
         if protocol != PROTOCOL_NAME:
             raise ProtocolError(f"unexpected protocol {protocol}")
+        global _LAST_DEVICE
+        _LAST_DEVICE = device
         return HelloMessage(version=version, device=device, protocol=protocol, firmware=firmware)
 
     if message_type == "capabilities":
-        return CapabilitiesMessage(
+        capabilities = CapabilitiesMessage(
             version=version,
             device=device,
             commands=tuple(_parse_command_spec(item) for item in _require_list(raw, "commands")),
             streams=tuple(_parse_stream_spec(item) for item in _require_list(raw, "streams")),
             params=tuple(_parse_param_spec(item) for item in _require_list(raw, "params")),
         )
+        _LAST_DEVICE = device
+        _register_stream_specs(device, capabilities.streams)
+        return capabilities
 
     if message_type == "cmd":
         args = _require_mapping(raw, "args")
@@ -423,7 +546,15 @@ def _stream_field_to_dict(field_spec: StreamFieldSpec) -> dict[str, JSONValue]:
 
 
 def _stream_spec_to_dict(spec: StreamSpec) -> dict[str, JSONValue]:
-    return {"name": spec.name, "fields": [_stream_field_to_dict(field) for field in spec.fields]}
+    payload: dict[str, JSONValue] = {
+        "name": spec.name,
+        "fields": [_stream_field_to_dict(field) for field in spec.fields],
+    }
+    if spec.id is not None:
+        payload["id"] = spec.id
+    if spec.sample_format != "json":
+        payload["sample_format"] = spec.sample_format
+    return payload
 
 
 def _param_spec_to_dict(spec: ParamSpec) -> dict[str, JSONValue]:

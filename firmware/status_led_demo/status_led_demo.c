@@ -392,6 +392,10 @@ static void poll_command_input(
             devlink_serial_print_event(&g_status_led_device, "protocol.line_too_long", "error");
         }
     }
+
+    if (pio_uart_rx_take_dropped_count(command_rx) > 0u) {
+        devlink_serial_print_event(&g_status_led_device, "protocol.rx_overflow", "error");
+    }
 }
 
 static bool command_input_pending(

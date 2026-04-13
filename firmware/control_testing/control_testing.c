@@ -184,6 +184,19 @@ typedef struct {
 static bool control_testing_pid_callback(repeating_timer_t *rt);
 static void control_testing_pid_tick(ControlTestingApp *app);
 static void control_testing_emit_telemetry(ControlTestingApp *app);
+static void control_testing_consume_command_byte(
+    DevlinkSerialLineBuffer *line_buffer,
+    ControlTestingApp *app,
+    int received_byte,
+    char *command_line,
+    size_t command_line_size
+);
+static void control_testing_flush_command_buffer(
+    DevlinkSerialLineBuffer *line_buffer,
+    ControlTestingApp *app,
+    char *command_line,
+    size_t command_line_size
+);
 static void control_testing_apply_servo_bc_link(ControlTestingApp *app);
 static void control_testing_set_command_state(
     ControlTestingApp *app,
@@ -290,13 +303,55 @@ static const DevlinkSerialStreamFieldDescriptor g_control_testing_hold_fields[] 
 };
 
 static const DevlinkSerialStreamDescriptor g_control_testing_streams[] = {
-    {"control_testing.adc", g_control_testing_adc_fields, count_of(g_control_testing_adc_fields)},
-    {"control_testing.adc_avg", g_control_testing_adc_avg_fields, count_of(g_control_testing_adc_avg_fields)},
-    {"control_testing.adc_lp", g_control_testing_adc_lp_fields, count_of(g_control_testing_adc_lp_fields)},
-    {"control_testing.angle_avg", g_control_testing_angle_avg_fields, count_of(g_control_testing_angle_avg_fields)},
-    {"control_testing.angle_lp", g_control_testing_angle_lp_fields, count_of(g_control_testing_angle_lp_fields)},
-    {"control_testing.motor", g_control_testing_motor_fields, count_of(g_control_testing_motor_fields)},
-    {"control_testing.hold", g_control_testing_hold_fields, count_of(g_control_testing_hold_fields)},
+    {
+        "control_testing.adc",
+        g_control_testing_adc_fields,
+        count_of(g_control_testing_adc_fields),
+        CONTROL_TESTING_STREAM_ADC,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.adc_avg",
+        g_control_testing_adc_avg_fields,
+        count_of(g_control_testing_adc_avg_fields),
+        CONTROL_TESTING_STREAM_ADC_AVG,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.adc_lp",
+        g_control_testing_adc_lp_fields,
+        count_of(g_control_testing_adc_lp_fields),
+        CONTROL_TESTING_STREAM_ADC_LP,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.angle_avg",
+        g_control_testing_angle_avg_fields,
+        count_of(g_control_testing_angle_avg_fields),
+        CONTROL_TESTING_STREAM_ANGLE_AVG,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.angle_lp",
+        g_control_testing_angle_lp_fields,
+        count_of(g_control_testing_angle_lp_fields),
+        CONTROL_TESTING_STREAM_ANGLE_LP,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.motor",
+        g_control_testing_motor_fields,
+        count_of(g_control_testing_motor_fields),
+        CONTROL_TESTING_STREAM_MOTOR,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
+    {
+        "control_testing.hold",
+        g_control_testing_hold_fields,
+        count_of(g_control_testing_hold_fields),
+        CONTROL_TESTING_STREAM_HOLD,
+        DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY,
+    },
 };
 
 static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
@@ -312,7 +367,7 @@ static const DevlinkSerialParamDescriptor g_control_testing_params[] = {
     },
     CONTROL_TESTING_SERVO_PARAM_SET(a, CONTROL_TESTING_SERVO_A, CONTROL_MODE_MANUAL),
     CONTROL_TESTING_SERVO_PARAM_SET(b, CONTROL_TESTING_SERVO_B, CONTROL_MODE_MANUAL),
-    CONTROL_TESTING_SERVO_PARAM_SET(c, CONTROL_TESTING_SERVO_C, CONTROL_MODE_HOLD),
+    CONTROL_TESTING_SERVO_PARAM_SET(c, CONTROL_TESTING_SERVO_C, CONTROL_MODE_MANUAL),
 };
 
 static const ServoCalibrationPoint g_control_testing_calibration_points[] = {
@@ -351,9 +406,9 @@ static const ServoConfig g_control_testing_servo_configs[CONTROL_TESTING_SERVO_C
     {
         'b',
         "motor_b",
-        LEG_POT_B_GPIO,
-        LEG_MOTOR_B_IN1_GPIO,
-        LEG_MOTOR_B_IN2_GPIO,
+        LEG_POT_C_GPIO,
+        LEG_MOTOR_C_IN1_GPIO,
+        LEG_MOTOR_C_IN2_GPIO,
         CONTROL_MODE_MANUAL,
         g_control_testing_calibration_points,
         count_of(g_control_testing_calibration_points),
@@ -361,10 +416,10 @@ static const ServoConfig g_control_testing_servo_configs[CONTROL_TESTING_SERVO_C
     {
         'c',
         "motor_c",
-        LEG_POT_C_GPIO,
-        LEG_MOTOR_C_IN1_GPIO,
-        LEG_MOTOR_C_IN2_GPIO,
-        CONTROL_MODE_HOLD,
+        LEG_POT_B_GPIO,
+        LEG_MOTOR_B_IN1_GPIO,
+        LEG_MOTOR_B_IN2_GPIO,
+        CONTROL_MODE_MANUAL,
         g_control_testing_calibration_points,
         count_of(g_control_testing_calibration_points),
     },
@@ -480,7 +535,7 @@ static void control_testing_init(ControlTestingApp *app) {
     adc_input_system_init();
 
     app->status_led_on = false;
-    app->command_state = CONTROL_TESTING_COMMAND_STATE_CUSTOM;
+    app->command_state = CONTROL_TESTING_COMMAND_STATE_ALL_MANUAL;
     for (size_t servo_index = 0u; servo_index < CONTROL_TESTING_SERVO_COUNT; servo_index++) {
         servo_init(&app->servos[servo_index], &g_control_testing_servo_configs[servo_index]);
     }
@@ -499,15 +554,26 @@ static void control_testing_init(ControlTestingApp *app) {
 }
 
 // Converts angle tenths to float degrees.
-static float control_testing_deg_tenths_to_f32(uint16_t deg_tenths) {
+static float control_testing_deg_tenths_to_f32(int16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
+}
+
+// Clamps one hold target to the supported public range.
+static float control_testing_clamp_hold_target_deg(float target_deg) {
+    if (target_deg < HOLD_TARGET_MIN) {
+        return HOLD_TARGET_MIN;
+    }
+    if (target_deg > HOLD_TARGET_MAX) {
+        return HOLD_TARGET_MAX;
+    }
+    return target_deg;
 }
 
 // Mirrors servo B's measured position into servo C's hold target.
 static void control_testing_apply_servo_bc_link(ControlTestingApp *app) {
     const Servo *servo_b = NULL;
     Servo *servo_c = NULL;
-    float servo_b_angle_lp_deg = 0.0f;
+    float servo_b_angle_lp_deg = 0.0f; // 
 
     hard_assert(app != NULL);
 
@@ -519,7 +585,7 @@ static void control_testing_apply_servo_bc_link(ControlTestingApp *app) {
     servo_b_angle_lp_deg = control_testing_deg_tenths_to_f32(
         servo_b->telemetry.angle_lp_deg_tenths
     );
-    servo_c->settings.hold_target_deg = servo_b_angle_lp_deg;
+    servo_c->settings.hold_target_deg = control_testing_clamp_hold_target_deg(servo_b_angle_lp_deg);
 }
 
 // Applies one of the high-level device command states.
@@ -934,32 +1000,78 @@ static void control_testing_poll_commands(
     hard_assert(command_line != NULL);
 
     while (pio_uart_rx_try_getc(command_rx, &received_byte)) {
-        DevlinkSerialLineReadStatus read_status = devlink_serial_line_buffer_push(
+        control_testing_consume_command_byte(
             line_buffer,
+            app,
             (int)received_byte,
             command_line,
             command_line_size
         );
-
-        if (read_status == DEVLINK_SERIAL_LINE_READY) {
-            devlink_serial_handle_command_line(&g_control_testing_device, app, command_line);
-        } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
-            devlink_serial_print_event(&g_control_testing_device, "protocol.line_too_long", "error");
-        }
     }
 
-    {
-        DevlinkSerialLineReadStatus read_status = devlink_serial_line_buffer_flush_if_idle(
+    control_testing_flush_command_buffer(
+        line_buffer,
+        app,
+        command_line,
+        command_line_size
+    );
+
+    if (pio_uart_rx_take_dropped_count(command_rx) > 0u) {
+        devlink_serial_print_event(&g_control_testing_device, "protocol.rx_overflow", "error");
+    }
+}
+
+// Pushes one command byte into a line buffer and dispatches complete lines.
+static void control_testing_consume_command_byte(
+    DevlinkSerialLineBuffer *line_buffer,
+    ControlTestingApp *app,
+    int received_byte,
+    char *command_line,
+    size_t command_line_size
+) {
+    DevlinkSerialLineReadStatus read_status = DEVLINK_SERIAL_LINE_NONE;
+
+    hard_assert(line_buffer != NULL);
+    hard_assert(app != NULL);
+    hard_assert(command_line != NULL);
+
+    read_status = devlink_serial_line_buffer_push(
             line_buffer,
+            received_byte,
             command_line,
             command_line_size
         );
 
-        if (read_status == DEVLINK_SERIAL_LINE_READY) {
-            devlink_serial_handle_command_line(&g_control_testing_device, app, command_line);
-        } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
-            devlink_serial_print_event(&g_control_testing_device, "protocol.line_too_long", "error");
-        }
+    if (read_status == DEVLINK_SERIAL_LINE_READY) {
+        devlink_serial_handle_command_line(&g_control_testing_device, app, command_line);
+    } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
+        devlink_serial_print_event(&g_control_testing_device, "protocol.line_too_long", "error");
+    }
+}
+
+// Flushes one line buffer after idle timeout.
+static void control_testing_flush_command_buffer(
+    DevlinkSerialLineBuffer *line_buffer,
+    ControlTestingApp *app,
+    char *command_line,
+    size_t command_line_size
+) {
+    DevlinkSerialLineReadStatus read_status = DEVLINK_SERIAL_LINE_NONE;
+
+    hard_assert(line_buffer != NULL);
+    hard_assert(app != NULL);
+    hard_assert(command_line != NULL);
+
+    read_status = devlink_serial_line_buffer_flush_if_idle(
+        line_buffer,
+        command_line,
+        command_line_size
+    );
+
+    if (read_status == DEVLINK_SERIAL_LINE_READY) {
+        devlink_serial_handle_command_line(&g_control_testing_device, app, command_line);
+    } else if (read_status == DEVLINK_SERIAL_LINE_OVERFLOW) {
+        devlink_serial_print_event(&g_control_testing_device, "protocol.line_too_long", "error");
     }
 }
 
@@ -975,6 +1087,8 @@ int main(void) {
     sleep_ms(200u);
 
     control_testing_init(&app);
+
+    gpio_pull_up(COMMAND_RX_GPIO);
 
     if (!pio_uart_rx_init(&command_rx, pio0, COMMAND_RX_GPIO, COMMAND_BAUD)) {
         devlink_serial_print_log(&g_control_testing_device, "error", "pio rx init failed");

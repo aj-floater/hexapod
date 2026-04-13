@@ -53,6 +53,19 @@ class ConnectionWorker(QtCore.QObject):
         self._outbox: list[CmdMessage] = []
         self._stopping = False
 
+    @staticmethod
+    def _format_line_for_display(line: bytes | str) -> str:
+        if isinstance(line, str):
+            return line
+
+        if not line:
+            return ""
+
+        if line[0] == 0xA5:
+            return f"<binary telemetry {line.hex()}>"
+
+        return line.decode("utf-8", errors="replace")
+
     @QtCore.Slot()
     def start(self) -> None:
         try:
@@ -102,6 +115,11 @@ class ConnectionWorker(QtCore.QObject):
         if self._transport is None:
             return
 
+        if self._outbox:
+            self._flush_outbox()
+            if self._outbox:
+                return
+
         lines_read = 0
         while lines_read < MAX_LINES_PER_POLL:
             try:
@@ -112,39 +130,47 @@ class ConnectionWorker(QtCore.QObject):
                 return
 
             if line is None:
+                if self._outbox:
+                    self._flush_outbox()
                 return
 
             lines_read += 1
             self._handle_line(line)
 
+            if self._outbox:
+                self._flush_outbox()
+                return
+
             try:
                 if self._transport.pending_input_bytes() <= 0:
-                    self._flush_outbox()
                     return
             except Exception as exc:
                 self.connection_error.emit(str(exc))
                 self.stop()
                 return
 
-        self._flush_outbox()
+        if self._outbox:
+            self._flush_outbox()
 
-    def _handle_line(self, line: str) -> None:
-        if line == "":
+    def _handle_line(self, line: bytes | str) -> None:
+        display_line = self._format_line_for_display(line)
+
+        if display_line == "":
             return
 
-        if self._recorder is not None:
-            self._recorder.record_line(line)
-        self.raw_line_received.emit(line)
+        self.raw_line_received.emit(display_line)
 
         try:
             message = parse_line_resilient(line)
         except ProtocolError as exc:
-            cleaned = line.replace("\x00", "").strip()
+            cleaned = display_line.replace("\x00", "").strip()
             if cleaned == "" or not cleaned.startswith("{") or not cleaned.endswith("}"):
                 return
-            self.parse_error_received.emit(str(exc), line)
+            self.parse_error_received.emit(str(exc), display_line)
             return
 
+        if self._recorder is not None:
+            self._recorder.record_message(message)
         self.message_received.emit(message)
 
     def _close(self) -> None:
@@ -169,16 +195,6 @@ class ConnectionWorker(QtCore.QObject):
         if self._transport is None or not self._outbox:
             if self._outbox_timer is not None:
                 self._outbox_timer.stop()
-            return
-
-        try:
-            if self._transport.pending_input_bytes() > 0:
-                if self._outbox_timer is not None and not self._outbox_timer.isActive():
-                    self._outbox_timer.start()
-                return
-        except Exception as exc:
-            self.connection_error.emit(str(exc))
-            self.stop()
             return
 
         sent = 0

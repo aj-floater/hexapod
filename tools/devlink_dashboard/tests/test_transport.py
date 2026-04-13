@@ -5,7 +5,30 @@ from types import SimpleNamespace
 from unittest import mock
 
 from devlink_dashboard.gui.controller import ConnectionConfig, ConnectionWorker
+from devlink_dashboard.messages import build_cmd_message
 from devlink_dashboard.transport import SerialPortInfo, SerialTransport, list_serial_port_infos, list_serial_ports
+
+
+class _ChunkedSerial:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = list(chunks)
+
+    @property
+    def in_waiting(self) -> int:
+        if not self._chunks:
+            return 0
+        return len(self._chunks[0])
+
+    def reset_output_buffer(self) -> None:
+        return None
+
+    def read(self, _size: int) -> bytes:
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+    def close(self) -> None:
+        return None
 
 
 class TransportTests(unittest.TestCase):
@@ -17,10 +40,40 @@ class TransportTests(unittest.TestCase):
         transport = SerialTransport("/dev/ttyACM0", baud=115200, timeout=0.05)
         transport.open()
 
-        serial_instance.reset_input_buffer.assert_called_once_with()
         serial_instance.reset_output_buffer.assert_called_once_with()
-        serial_instance.read_until.assert_called_once_with(b"\n")
+        serial_instance.reset_input_buffer.assert_not_called()
+        serial_instance.read_until.assert_not_called()
         transport.close()
+
+    def test_readline_preserves_partial_line_across_quiet_gaps(self) -> None:
+        capabilities_line = (
+            b'{"type":"capabilities","version":1,"device":"control_testing","commands":[],"streams":[],'
+            b'"params":[]}\r\n'
+        )
+        transport = SerialTransport("/dev/ttyACM0", baud=921600, timeout=0.0)
+        transport._serial = _ChunkedSerial(
+            [
+                capabilities_line[:35],
+                b"",
+                capabilities_line[35:72],
+                b"",
+                capabilities_line[72:],
+            ]
+        )
+
+        self.assertIsNone(transport.readline())
+        self.assertGreater(transport.pending_input_bytes(), 0)
+        self.assertIsNone(transport.readline())
+        self.assertGreater(transport.pending_input_bytes(), 0)
+        self.assertEqual(transport.readline(), capabilities_line[:-2])
+        self.assertEqual(transport.pending_input_bytes(), 0)
+
+    def test_pending_input_bytes_includes_buffered_bytes(self) -> None:
+        transport = SerialTransport("/dev/ttyACM0", baud=921600, timeout=0.05)
+        transport._serial = SimpleNamespace(in_waiting=4)
+        transport._rx_buffer.extend(b"abc")
+
+        self.assertEqual(transport.pending_input_bytes(), 7)
 
     @mock.patch("serial.tools.list_ports.comports")
     def test_list_serial_port_infos_includes_description(self, mock_comports: mock.Mock) -> None:
@@ -66,7 +119,7 @@ class TransportTests(unittest.TestCase):
 
         self.assertEqual(len(messages), 2)
 
-    def test_connection_worker_defers_send_until_input_is_drained(self) -> None:
+    def test_connection_worker_sends_without_waiting_for_input_drain(self) -> None:
         class FakeTransport:
             def __init__(self) -> None:
                 self.pending = 4
@@ -95,11 +148,44 @@ class TransportTests(unittest.TestCase):
             args={"param": "blink.period_ms", "value": 123},
         )
         worker.send_message(message)
-        self.assertEqual(worker._transport.sent, [])  # type: ignore[union-attr]
-
-        worker._transport.pending = 0  # type: ignore[union-attr]
-        worker._flush_outbox()
         self.assertEqual(worker._transport.sent, ["param.set"])  # type: ignore[union-attr]
+
+    def test_connection_worker_flushes_outbox_before_draining_input(self) -> None:
+        class FakeTransport:
+            def __init__(self) -> None:
+                self.lines = [
+                    b'{"type":"hello","version":1,"device":"status_led","protocol":"devlink","firmware":"test"}',
+                ]
+                self.sent: list[str] = []
+
+            def readline(self) -> bytes | None:
+                if not self.lines:
+                    return None
+                return self.lines.pop(0)
+
+            def pending_input_bytes(self) -> int:
+                return 1 if self.lines else 0
+
+            def send_message(self, message) -> None:
+                self.sent.append(message.name)
+
+        worker = ConnectionWorker(ConnectionConfig(port="/dev/null"))
+        worker._transport = FakeTransport()  # type: ignore[assignment]
+        worker._outbox.append(
+            build_cmd_message(
+                device="status_led",
+                command_id=8,
+                name="param.set",
+                args={"param": "blink.period_ms", "value": 123},
+            )
+        )
+
+        messages: list[object] = []
+        worker.message_received.connect(messages.append)
+        worker._poll()
+
+        self.assertEqual(worker._transport.sent, ["param.set"])  # type: ignore[union-attr]
+        self.assertEqual(len(messages), 1)
 
 
 if __name__ == "__main__":

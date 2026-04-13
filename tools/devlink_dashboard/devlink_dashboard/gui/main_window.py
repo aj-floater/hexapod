@@ -453,7 +453,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_signals()
         self._refresh_discovery_views()
 
-        self._baud_spin.setValue(initial_baud)
+        self._set_baud_selection(initial_baud)
         if initial_record_path is not None:
             self._record_checkbox.setChecked(True)
             self._record_path_edit.setText(initial_record_path)
@@ -959,10 +959,14 @@ class MainWindow(QtWidgets.QMainWindow):
         toolbar.addWidget(self._refresh_ports_button)
 
         toolbar.addWidget(QtWidgets.QLabel("Baud"))
-        self._baud_spin = QtWidgets.QSpinBox()
-        self._baud_spin.setRange(1, 4_000_000)
-        self._baud_spin.setValue(115200)
-        toolbar.addWidget(self._baud_spin)
+        self._baud_combo = QtWidgets.QComboBox()
+        self._baud_combo.setEditable(True)
+        self._baud_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self._baud_combo.setMinimumContentsLength(8)
+        self._baud_combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        for baud in (9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1000000, 1500000, 2000000):
+            self._baud_combo.addItem(str(baud), baud)
+        toolbar.addWidget(self._baud_combo)
 
         self._record_checkbox = QtWidgets.QCheckBox("Record")
         toolbar.addWidget(self._record_checkbox)
@@ -1322,6 +1326,31 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
         self._port_combo.setEditText(port)
 
+    def _set_baud_selection(self, baud: int) -> None:
+        for index in range(self._baud_combo.count()):
+            if self._baud_combo.itemData(index) == baud:
+                self._baud_combo.setCurrentIndex(index)
+                return
+        self._baud_combo.setEditText(str(baud))
+
+    def _selected_baud(self) -> int | None:
+        data = self._baud_combo.currentData()
+        if isinstance(data, int) and data > 0:
+            return data
+
+        text = self._baud_combo.currentText().strip().replace("_", "")
+        if not text:
+            return None
+
+        try:
+            baud = int(text)
+        except ValueError:
+            return None
+
+        if baud <= 0:
+            return None
+        return baud
+
     def _choose_record_path(self) -> None:
         path = QtWidgets.QFileDialog.getExistingDirectory(
             self,
@@ -1391,6 +1420,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_status("choose a serial port first", error=True)
             return
 
+        baud = self._selected_baud()
+        if baud is None:
+            self._show_status("enter a valid baud rate", error=True)
+            return
+
         record_path = None
         if self._record_checkbox.isChecked():
             record_directory = self._record_output_directory()
@@ -1399,7 +1433,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._controller.connect_to(
             ConnectionConfig(
                 port=port,
-                baud=self._baud_spin.value(),
+                baud=baud,
                 timeout=self._initial_timeout,
                 record_path=record_path,
             )
@@ -1481,7 +1515,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 tooltip="Connect to the selected serial device",
             )
         self._port_combo.setEnabled(not connected)
-        self._baud_spin.setEnabled(not connected)
+        self._baud_combo.setEnabled(not connected)
         self._refresh_ports_button.setEnabled(not connected)
         self._record_checkbox.setEnabled(not connected)
         self._record_path_edit.setEnabled(not connected)

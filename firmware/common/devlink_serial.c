@@ -312,6 +312,17 @@ static const char *access_to_string(DevlinkSerialAccess access) {
     return (access == DEVLINK_SERIAL_ACCESS_RW) ? "rw" : "ro";
 }
 
+static const char *sample_format_to_string(DevlinkSerialSampleFormat format) {
+    return (format == DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY) ? "binary" : "json";
+}
+
+static const char *device_default_sample_format(const DevlinkSerialDeviceDescriptor *device) {
+    if (device->stream_count == 0u) {
+        return "json";
+    }
+    return sample_format_to_string(device->streams[0].sample_format);
+}
+
 static void print_float32_value(float value) {
     char buffer[32] = {0};
     size_t len = 0u;
@@ -349,6 +360,58 @@ static void print_scalar_value(DevlinkSerialScalarType type, DevlinkSerialValue 
             break;
         default:
             printf("null");
+            break;
+    }
+}
+
+static void print_le_u16(uint16_t value) {
+    putchar_raw((int)(value & 0xffu));
+    putchar_raw((int)((value >> 8u) & 0xffu));
+}
+
+static void print_le_u32(uint32_t value) {
+    putchar_raw((int)(value & 0xffu));
+    putchar_raw((int)((value >> 8u) & 0xffu));
+    putchar_raw((int)((value >> 16u) & 0xffu));
+    putchar_raw((int)((value >> 24u) & 0xffu));
+}
+
+static void print_le_u64(uint64_t value) {
+    for (size_t shift = 0u; shift < 64u; shift += 8u) {
+        putchar_raw((int)((value >> shift) & 0xffu));
+    }
+}
+
+static void print_binary_scalar_value(DevlinkSerialScalarType type, DevlinkSerialValue value) {
+    union {
+        float f32;
+        uint32_t u32;
+    } f32_bits = {0};
+
+    switch (type) {
+        case DEVLINK_SERIAL_TYPE_BOOL:
+            putchar_raw(value.bool_value ? 1 : 0);
+            break;
+        case DEVLINK_SERIAL_TYPE_U8:
+            putchar_raw((int)((uint8_t)value.u32_value));
+            break;
+        case DEVLINK_SERIAL_TYPE_U16:
+            print_le_u16((uint16_t)value.u32_value);
+            break;
+        case DEVLINK_SERIAL_TYPE_U32:
+            print_le_u32(value.u32_value);
+            break;
+        case DEVLINK_SERIAL_TYPE_I16:
+            print_le_u16((uint16_t)(int16_t)value.i32_value);
+            break;
+        case DEVLINK_SERIAL_TYPE_I32:
+            print_le_u32((uint32_t)value.i32_value);
+            break;
+        case DEVLINK_SERIAL_TYPE_F32:
+            f32_bits.f32 = value.f32_value;
+            print_le_u32(f32_bits.u32);
+            break;
+        default:
             break;
     }
 }
@@ -872,7 +935,12 @@ void devlink_serial_print_capabilities(const DevlinkSerialDeviceDescriptor *devi
     printf("],\"streams\":[");
     for (size_t i = 0u; i < device->stream_count; i++) {
         const DevlinkSerialStreamDescriptor *stream = &device->streams[i];
-        printf("{\"name\":\"%s\",\"fields\":[", stream->name);
+        printf(
+            "{\"name\":\"%s\",\"id\":%u,\"sample_format\":\"%s\",\"fields\":[",
+            stream->name,
+            (unsigned int)stream->id,
+            sample_format_to_string(stream->sample_format)
+        );
         for (size_t field_index = 0u; field_index < stream->field_count; field_index++) {
             const DevlinkSerialStreamFieldDescriptor *field = &stream->fields[field_index];
             printf(
@@ -886,7 +954,12 @@ void devlink_serial_print_capabilities(const DevlinkSerialDeviceDescriptor *devi
         printf("]}%s", (i + 1u == device->stream_count) ? "" : ",");
     }
 
-    printf("],\"params\":[");
+    printf(
+        "],\"telemetry\":{\"sample_formats\":[\"json\",\"binary\"],\"default_sample_format\":\"%s\"},"
+        "\"params\":["
+        ,
+        device_default_sample_format(device)
+    );
     for (size_t i = 0u; i < device->param_count; i++) {
         const DevlinkSerialParamDescriptor *param = &device->params[i];
         printf(
@@ -991,6 +1064,19 @@ void devlink_serial_print_sample(
     uint64_t t_us,
     const DevlinkSerialValue *values
 ) {
+    if (stream->sample_format == DEVLINK_SERIAL_SAMPLE_FORMAT_BINARY) {
+        putchar_raw(0xa5);
+        putchar_raw((int)DEVLINK_SERIAL_VERSION);
+        putchar_raw((int)stream->id);
+        print_le_u32(seq);
+        print_le_u64(t_us);
+        for (size_t i = 0u; i < stream->field_count; i++) {
+            print_binary_scalar_value(stream->fields[i].type, values[i]);
+        }
+        printf("\r\n");
+        return;
+    }
+
     printf(
         "{\"type\":\"sample\",\"version\":%u,\"device\":\"%s\",\"stream\":\"%s\",\"seq\":%lu,"
         "\"t_us\":%llu,\"data\":{",

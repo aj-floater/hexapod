@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -24,6 +25,7 @@ class SerialTransport:
         self.baud = baud
         self.timeout = timeout
         self._serial = None
+        self._rx_buffer = bytearray()
 
     @staticmethod
     def _require_serial():
@@ -38,41 +40,24 @@ class SerialTransport:
     def open(self) -> None:
         serial = self._require_serial()
         self._serial = serial.Serial(self.port, self.baud, timeout=self.timeout)
+        self._rx_buffer.clear()
         self._resynchronize_input()
 
     def _resynchronize_input(self) -> None:
         if self._serial is None:
             return
 
-        reset_input = getattr(self._serial, "reset_input_buffer", None)
-        if callable(reset_input):
-            reset_input()
-
         reset_output = getattr(self._serial, "reset_output_buffer", None)
         if callable(reset_output):
             reset_output()
-
-        read_until = getattr(self._serial, "read_until", None)
-        if callable(read_until):
-            try:
-                read_until(b"\n")
-            except Exception:
-                pass
 
     def close(self) -> None:
         if self._serial is not None:
             self._serial.close()
             self._serial = None
+        self._rx_buffer.clear()
 
-    def readline(self) -> str | None:
-        if self._serial is None:
-            raise RuntimeError("transport is not open")
-        raw = self._serial.readline()
-        if not raw:
-            return None
-        return raw.decode("utf-8", errors="replace").rstrip("\r\n")
-
-    def pending_input_bytes(self) -> int:
+    def _serial_pending_input_bytes(self) -> int:
         if self._serial is None:
             raise RuntimeError("transport is not open")
         waiting = getattr(self._serial, "in_waiting", 0)
@@ -80,6 +65,44 @@ class SerialTransport:
             return int(waiting)
         except (TypeError, ValueError):
             return 0
+
+    def _pop_buffered_line(self) -> bytes | None:
+        terminator_index = self._rx_buffer.find(b"\r\n")
+        if terminator_index < 0:
+            return None
+
+        line = bytes(self._rx_buffer[:terminator_index])
+        del self._rx_buffer[:terminator_index + 2]
+        return line
+
+    def readline(self) -> bytes | None:
+        if self._serial is None:
+            raise RuntimeError("transport is not open")
+
+        line = self._pop_buffered_line()
+        if line is not None:
+            return line
+
+        last_activity_at = time.monotonic()
+        while True:
+            read_size = self._serial_pending_input_bytes()
+            if read_size <= 0:
+                read_size = 1
+
+            raw = self._serial.read(read_size)
+            if raw:
+                self._rx_buffer.extend(raw)
+                last_activity_at = time.monotonic()
+                line = self._pop_buffered_line()
+                if line is not None:
+                    return line
+                continue
+
+            if time.monotonic() - last_activity_at >= self.timeout:
+                return None
+
+    def pending_input_bytes(self) -> int:
+        return len(self._rx_buffer) + self._serial_pending_input_bytes()
 
     def send_line(self, line: str) -> None:
         if self._serial is None:
@@ -127,11 +150,11 @@ class SerialPump:
 
     def pump_once(self) -> Message | None:
         line = self.transport.readline()
-        if line is None or line == "":
+        if line is None or line == b"":
             return None
-        if self.recorder is not None:
-            self.recorder.record_line(line)
         message = parse_line_resilient(line)
+        if self.recorder is not None:
+            self.recorder.record_message(message)
         if self.bus is not None:
             self.bus.publish(message)
         return message
