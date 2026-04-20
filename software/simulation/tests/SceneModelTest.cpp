@@ -1,6 +1,7 @@
 #include <Corrade/TestSuite/Tester.h>
 #include <Corrade/TestSuite/Compare/Numeric.h>
 
+#include "editor/ArcBall.h"
 #include "editor/MathUtils.h"
 #include "editor/SceneModel.h"
 
@@ -13,7 +14,9 @@ class SceneModelTest: public Corrade::TestSuite::Tester {
                 &SceneModelTest::defaultSceneHasEntities,
                 &SceneModelTest::childTransformIsHierarchical,
                 &SceneModelTest::raycastReturnsNearestVisibleEntity,
-                &SceneModelTest::visibleBoundsIgnoreHiddenEntities
+                &SceneModelTest::visibleBoundsIgnoreHiddenEntities,
+                &SceneModelTest::turntableCameraHasNoRoll,
+                &SceneModelTest::turntableCameraPreservesEyePosition
             });
         }
 
@@ -22,6 +25,8 @@ class SceneModelTest: public Corrade::TestSuite::Tester {
         void childTransformIsHierarchical();
         void raycastReturnsNearestVisibleEntity();
         void visibleBoundsIgnoreHiddenEntities();
+        void turntableCameraHasNoRoll();
+        void turntableCameraPreservesEyePosition();
 };
 
 void SceneModelTest::defaultSceneHasEntities() {
@@ -64,6 +69,42 @@ void SceneModelTest::visibleBoundsIgnoreHiddenEntities() {
     CORRADE_VERIFY(originalBounds);
     CORRADE_VERIFY(hiddenBounds);
     CORRADE_VERIFY(originalBounds->min().x() < hiddenBounds->min().x());
+}
+
+void SceneModelTest::turntableCameraHasNoRoll() {
+    Magnum::Examples::ArcBall camera{
+        {5.4f, 4.2f, 6.2f},
+        {0.0f, 0.0f, 0.0f},
+        Magnum::Vector3::yAxis(),
+        ViewportVerticalFov,
+        {1280, 720}};
+
+    camera.initTransformation({320.0f, 240.0f});
+    camera.rotate({910.0f, 120.0f});
+    camera.updateTransformation();
+
+    const Magnum::Vector3 right = camera.transformationMatrix()
+        .transformVector(Magnum::Vector3::xAxis())
+        .normalized();
+    CORRADE_COMPARE_WITH(
+        Magnum::Math::abs(Magnum::Math::dot(right, camera.worldUp())),
+        0.0f,
+        Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
+}
+
+void SceneModelTest::turntableCameraPreservesEyePosition() {
+    const Magnum::Vector3 eye{5.4f, 4.2f, 6.2f};
+    Magnum::Examples::ArcBall camera{
+        eye,
+        {0.0f, 0.0f, 0.0f},
+        -Magnum::Vector3::yAxis(),
+        ViewportVerticalFov,
+        {1280, 720}};
+
+    const Magnum::Vector3 actualEye = camera.transformationMatrix().translation();
+    CORRADE_COMPARE_WITH(actualEye.x(), eye.x(), Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
+    CORRADE_COMPARE_WITH(actualEye.y(), eye.y(), Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
+    CORRADE_COMPARE_WITH(actualEye.z(), eye.z(), Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
 }
 
 }

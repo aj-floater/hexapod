@@ -80,7 +80,6 @@ class EditorApplication: public Magnum::Platform::Sdl2Application {
         std::optional<SceneRayHit> raycastViewportPoint(const Magnum::Vector2& screenPosition) const;
         Magnum::Matrix4 viewportProjectionMatrix() const;
         Magnum::Vector3 cameraForward() const;
-        Magnum::Vector3 cameraUp() const;
         void setCameraView(const Magnum::Vector3& center, Magnum::Float distance);
         void frameCameraToBounds(const Magnum::Range3D& bounds, const char* label);
 
@@ -100,7 +99,7 @@ class EditorApplication: public Magnum::Platform::Sdl2Application {
         Magnum::Examples::ArcBall _arcball{
             {5.4f, 4.2f, 6.2f},
             {0.0f, 0.0f, 0.0f},
-            Magnum::Vector3::yAxis(),
+            -Magnum::Vector3::yAxis(),
             ViewportVerticalFov,
             {1, 1}};
         ViewportInteractionState _viewportInteraction;

@@ -678,10 +678,15 @@ bool EditorApplication::updateViewportInteraction(const Magnum::Vector2& screenP
     _viewportInteraction.dragged = _viewportInteraction.dragged || dragDistance >= 3.0f;
     if(!_viewportInteraction.dragged) return true;
 
-    _viewportInteraction.currentLocalPosition += {relativePosition.x(), -relativePosition.y()};
+    const bool isPanInteraction =
+        _viewportInteraction.pointer == Pointer::MouseRight ||
+        (modifiers & Modifier::Shift);
+    const Magnum::Vector2 localDelta{
+        relativePosition.x(),
+        isPanInteraction ? relativePosition.y() : -relativePosition.y()};
+    _viewportInteraction.currentLocalPosition += localDelta;
     const Magnum::Vector2 localPosition = _viewportInteraction.currentLocalPosition;
-    if(_viewportInteraction.pointer == Pointer::MouseRight ||
-       (modifiers & Modifier::Shift))
+    if(isPanInteraction)
         _arcball.translate(localPosition);
     else
         _arcball.rotate(localPosition);
@@ -779,16 +784,10 @@ Magnum::Vector3 EditorApplication::cameraForward() const {
         .normalized();
 }
 
-Magnum::Vector3 EditorApplication::cameraUp() const {
-    return _arcball.transformationMatrix()
-        .transformVector(Magnum::Vector3::yAxis())
-        .normalized();
-}
-
 void EditorApplication::setCameraView(const Magnum::Vector3& center, const Magnum::Float distance) {
     const Magnum::Float clampedDistance = Math::clamp(distance, CameraMinDistance, CameraMaxDistance);
     const Magnum::Vector3 eye = center - cameraForward()*clampedDistance;
-    _arcball.setViewParameters(eye, center, cameraUp());
+    _arcball.setViewParameters(eye, center, _arcball.worldUp());
 }
 
 void EditorApplication::frameCameraToBounds(const Magnum::Range3D& bounds, const char* const label) {
