@@ -31,6 +31,10 @@ Magnum::Range3D transformBounds(const Magnum::Range3D& bounds, const Magnum::Mat
     return result;
 }
 
+Magnum::Matrix4 rigidTransform(const Magnum::Matrix4& transform) {
+    return Magnum::Matrix4::from(transform.rotation(), transform.translation());
+}
+
 }
 
 Magnum::Matrix4 Transform::matrix() const {
@@ -88,7 +92,7 @@ Magnum::Matrix4 SceneModel::worldTransform(const Magnum::Int id) const {
     if(!entity) return Magnum::Matrix4{Magnum::Math::IdentityInit};
 
     if(entity->parentId < 0) return entity->localTransform.matrix();
-    return worldTransform(entity->parentId)*entity->localTransform.matrix();
+    return rigidTransform(worldTransform(entity->parentId))*entity->localTransform.matrix();
 }
 
 Magnum::Range3D SceneModel::worldBounds(const Magnum::Int id) const {

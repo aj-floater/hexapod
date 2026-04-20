@@ -13,6 +13,7 @@ class SceneModelTest: public Corrade::TestSuite::Tester {
             addTests({
                 &SceneModelTest::defaultSceneHasEntities,
                 &SceneModelTest::childTransformIsHierarchical,
+                &SceneModelTest::childTransformsIgnoreParentScale,
                 &SceneModelTest::raycastReturnsNearestVisibleEntity,
                 &SceneModelTest::visibleBoundsIgnoreHiddenEntities,
                 &SceneModelTest::turntableCameraHasNoRoll,
@@ -23,6 +24,7 @@ class SceneModelTest: public Corrade::TestSuite::Tester {
     private:
         void defaultSceneHasEntities();
         void childTransformIsHierarchical();
+        void childTransformsIgnoreParentScale();
         void raycastReturnsNearestVisibleEntity();
         void visibleBoundsIgnoreHiddenEntities();
         void turntableCameraHasNoRoll();
@@ -44,6 +46,16 @@ void SceneModelTest::childTransformIsHierarchical() {
     CORRADE_VERIFY(entity);
     CORRADE_VERIFY(link.translation() != entity->localTransform.translation);
     CORRADE_VERIFY(link.translation().y() > joint.translation().y());
+}
+
+void SceneModelTest::childTransformsIgnoreParentScale() {
+    SceneModel scene;
+    const Magnum::Matrix4 endEffector = scene.worldTransform(4);
+    const Magnum::Matrix3x3 rotationScaling = endEffector.rotationScaling();
+
+    CORRADE_COMPARE_WITH(rotationScaling[0].length(), 0.26f, Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
+    CORRADE_COMPARE_WITH(rotationScaling[1].length(), 0.26f, Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
+    CORRADE_COMPARE_WITH(rotationScaling[2].length(), 0.26f, Corrade::TestSuite::Compare::around(Magnum::Float{1.0e-4f}));
 }
 
 void SceneModelTest::raycastReturnsNearestVisibleEntity() {

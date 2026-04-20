@@ -755,10 +755,14 @@ Magnum::Vector2 EditorApplication::uiPointerDelta(const Magnum::Vector2& windowD
 std::optional<SceneRayHit> EditorApplication::raycastViewportPoint(const Magnum::Vector2& screenPosition) const {
     if(_viewport.size.x() <= 0.0f || _viewport.size.y() <= 0.0f) return std::nullopt;
 
-    const Vector2 local = viewportLocalPosition(screenPosition);
+    Vector2 local = viewportLocalPosition(screenPosition);
     if(local.x() < 0.0f || local.y() < 0.0f ||
        local.x() > _viewport.size.x() || local.y() > _viewport.size.y())
         return std::nullopt;
+
+    /* The viewport image is displayed with vertically flipped UVs, so mirror
+       the mouse Y back into framebuffer space before constructing the ray. */
+    local.y() = _viewport.size.y() - local.y();
 
     const Ray3D ray = screenPointToRay(
         local,
