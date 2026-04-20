@@ -39,8 +39,9 @@
 
 namespace Magnum { namespace Examples {
 
-/* Implementation of Ken Shoemake's arcball camera with smooth navigation
-   feature: https://www.talisman.org/~erlkonig/misc/shoemake92-arcball.pdf */
+/* A turntable-style camera adapted from Magnum's ArcBall example. The public
+   API stays compatible with the original example, but rotation is constrained
+   to yaw/pitch around a fixed world-up axis. */
 class ArcBall {
     public:
         ArcBall(const Vector3& cameraPosition, const Vector3& viewCenter,
@@ -88,24 +89,27 @@ class ArcBall {
         /* Field of view */
         Deg fov() const { return _fov; }
 
+        /* Fixed world-up direction used by the turntable */
+        const Vector3& worldUp() const { return _worldUp; }
+
         /* Get the camera's view transformation as a qual quaternion */
         const DualQuaternion& view() const { return _view; }
 
         /* Get the camera's view transformation as a matrix */
-        Matrix4 viewMatrix() const { return _view.toMatrix(); }
+        Matrix4 viewMatrix() const { return _viewMatrix; }
 
         /* Get the camera's inverse view matrix (which also produces
            transformation of the camera) */
-        Matrix4 inverseViewMatrix() const { return _inverseView.toMatrix(); }
+        Matrix4 inverseViewMatrix() const { return _inverseViewMatrix; }
 
         /* Get the camera's transformation as a dual quaternion */
         const DualQuaternion& transformation() const { return _inverseView; }
 
         /* Get the camera's transformation matrix */
-        Matrix4 transformationMatrix() const { return _inverseView.toMatrix(); }
+        Matrix4 transformationMatrix() const { return _inverseViewMatrix; }
 
         /* Return the distance from the camera position to the center view */
-        Float viewDistance() const { return Math::abs(_targetZooming); }
+        Float viewDistance() const { return _targetDistance; }
 
     protected:
         /* Update the camera transformations */
@@ -118,14 +122,17 @@ class ArcBall {
 
         Deg _fov;
         Vector2i _windowSize;
+        Vector3 _worldUp;
 
         Vector2 _prevPointerPositionNdc;
         Float _lagging{};
 
-        Vector3 _targetPosition, _currentPosition, _positionT0;
-        Quaternion _targetQRotation, _currentQRotation, _qRotationT0;
-        Float _targetZooming, _currentZooming, _zoomingT0;
+        Vector3 _targetCenter, _currentCenter, _centerT0;
+        Rad _targetYaw, _currentYaw, _yawT0;
+        Rad _targetPitch, _currentPitch, _pitchT0;
+        Float _targetDistance, _currentDistance, _distanceT0;
         DualQuaternion _view, _inverseView;
+        Matrix4 _viewMatrix, _inverseViewMatrix;
 };
 
 }}
