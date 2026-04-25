@@ -1,6 +1,6 @@
 % !TeX program = lualatex
 \begin{filecontents*}{\jobname.xmpdata}
-  \Title{Development and Testing of a Full-Stack Multi Micro Servo Driver Board for Use with Small Legged Robots}
+  \Title{Recovering Per-Joint Control Authority in a Small Hexapod: A Custom Micro Servo Driver Board with Closed-Loop Position Control and Simulation-Based Feedforward}
   \Author{11394375}
   \Language{en-GB}
   \Copyrighted{True}
@@ -20,6 +20,7 @@
 \usepackage{tabularx}
 \usepackage{microtype}
 \usepackage{xurl}
+\usepackage{xcolor}
 
 \usepackage[
   style=ieee,
@@ -42,7 +43,7 @@
 
 \newcommand{\studentname}{Archie Orwin James}
 \newcommand{\supervisorname}{Dr Michael O'Toole}
-\newcommand{\reportsubtitle}{Third Year Individual Project -- Final Report}
+\newcommand{\reportsubtitle}{Third Year Individual Project -- First Revision}
 
 \makeatletter
 \def\maketitle{
@@ -65,10 +66,8 @@
     \begin{center}
       \vspace*{\fill}
       {\Large \bfseries \@title\par}
-      \vspace{0.8cm}
-      {\large \emph{Interim title}\par}
       \vspace{2cm}
-      {\Large \reportsubtitle\par}
+      {\Large \textcolor{red}\reportsubtitle\par}
       \vspace{2cm}
       {\textbf{Date of submission}\par}
       \@submitdate\par
@@ -93,7 +92,7 @@
 \makeatother
 
 \begin{document}
-\title{Development and Testing of a Full-Stack Multi Micro Servo Driver Board for Use with Small Legged Robots}
+\title{Recovering Per-Joint Control Authority in a Small Hexapod: A Custom Micro Servo Driver Board with Closed-Loop Position Control and Simulation-Based Feedforward}
 \studentid{11394375}
 \course{Mechatronic Engineering}
 \faculty{Science and Engineering}
@@ -105,27 +104,26 @@
 \uomtoc
 
 \begin{abstract}
-... TBC
+% ... TBC
 \end{abstract}
 
 \begin{uomoriginality}
-I hereby confirm that this dissertation is my own original work unless referenced clearly to the contrary, and that no portion of the work referred to in this dissertation has been submitted in support of an application for another degree or qualification of this or any other university or other institute of learning.
+% I hereby confirm that this dissertation is my own original work unless referenced clearly to the contrary, and that no portion of the work referred to in this dissertation has been submitted in support of an application for another degree or qualification of this or any other university or other institute of learning.
 \end{uomoriginality}
 \phantomsection
 \addcontentsline{toc}{section}{Intellectual property statement}
 \section*{Intellectual property statement}
-\begin{enumerate}[label=\roman*.]
-  \item The author of this dissertation, including any appendices and schedules, owns certain copyright or related rights in it and has granted The University of Manchester certain rights to use that material for administrative purposes.
-  \item Copies of this dissertation, whether in full or in extracts and whether in hard copy or electronic form, may be made only in accordance with the Copyright, Designs and Patents Act 1988, related regulations, or any licensing agreements in force at the time.
-  \item The ownership of certain patents, designs, trademarks, or other intellectual property referred to in this dissertation may belong to third parties. Such material must not be reproduced or used without prior written permission from the relevant owner.
-  \item Further information on the conditions governing disclosure, publication, and commercialisation is available through the University intellectual property policy, any relevant dissertation restriction declarations, and the University Library regulations.
-\end{enumerate}
-\clearpage
+% \begin{enumerate}[label=\roman*.]
+%   \item The author of this dissertation, including any appendices and schedules, owns certain copyright or related rights in it and has granted The University of Manchester certain rights to use that material for administrative purposes.
+%   \item Copies of this dissertation, whether in full or in extracts and whether in hard copy or electronic form, may be made only in accordance with the Copyright, Designs and Patents Act 1988, related regulations, or any licensing agreements in force at the time.
+%   \item The ownership of certain patents, designs, trademarks, or other intellectual property referred to in this dissertation may belong to third parties. Such material must not be reproduced or used without prior written permission from the relevant owner.
+%   \item Further information on the conditions governing disclosure, publication, and commercialisation is available through the University intellectual property policy, any relevant dissertation restriction declarations, and the University Library regulations.
+% \end{enumerate}
 
 \phantomsection
 \addcontentsline{toc}{section}{Acknowledgements}
 \section*{Acknowledgements}
-I would like to thank Dr Michael O'Toole for his supervision and guidance throughout this project. I am also grateful to the technical staff and wider course team whose support makes iterative electronics and robotics work possible.
+% I would like to thank Dr Michael O'Toole for his supervision and guidance throughout this project. I am also grateful to the technical staff and wider course team whose support makes iterative electronics and robotics work possible.
 \clearpage
 
 \uomstartmainbody
@@ -146,26 +144,118 @@ The actuation challenge at small scale is particularly acute for a hexapod. A si
 This is the gap that motivated the present work. A custom driver board that replaces the inaccessible internal PID with an externally tunable closed-loop controller gives direct authority over the gain set applied at each joint. Joint angle readback is the prerequisite for this: it closes the feedback loop and, crucially, provides the measured state needed to drive a simulation of the leg's dynamics. That simulation predicts the additional motor effort required at each point in a trajectory and contributes a feedforward term to the controller — reducing the error the feedback loop must correct and allowing more accurate, stable motion. The board developed in this project is intended as a foundation I can continue to build on: a platform that makes per-joint tuning, position telemetry, and simulation-coupled feedforward practically achievable on a small hexapod.
 
 \subsection{Aims and objectives}
-This project aims to design, implement, and validate a compact three-channel servo driver board and per-joint closed-loop position controller for a small hexapod robot, enabling joint angle readback and simulation-based feedforward compensation to improve trajectory tracking accuracy.
+This project aims to recover practical joint-level control authority in a small hexapod by replacing stock hobby-servo control with a compact three-channel driver board, tunable feedback control, and simulation-derived feedforward compensation.
 
-The supporting objectives are:
+The supporting objectives are stated as measurable achievements so that they can be evaluated directly at the end of the project:
 \begin{itemize}[leftmargin=*]
-  \item survey existing work on embedded servo control, closed-loop position control on hobby actuators, and model-based feedforward compensation in legged robots;
-  \item design and fabricate a compact three-channel I2C servo driver board suited to the electrical and mechanical constraints of a hexapod leg;
-  \item implement a per-servo closed-loop position controller with configurable PID gains, velocity and acceleration limiting on the position reference, and soft angle limits;
-  \item add an enable/disable interface with a timeout failsafe and an I2C telemetry channel for live joint angle, error, and control output;
-  \item provide persistent storage of per-joint calibration data and controller gains, surviving power cycles;
-  \item develop a simulation model of a hexapod leg joint that uses measured joint angles to predict the additional motor effort required during motion;
-  \item integrate the simulation-predicted feedforward term into the position controller and validate the improvement by comparing feedback-only against feedback-plus-feedforward tracking error on a representative joint trajectory.
+  \item develop a compact three-channel control board for a representative hexapod leg, providing independent motor drive and joint-position feedback for three modified hobby servos;
+  \item implement tunable closed-loop position control on a representative joint, using measured angular feedback and telemetry to support controller tuning and performance analysis;
+  \item provide the embedded control features needed for repeatable experimental use, including calibration, soft angle limits, command enable, timeout protection, and host telemetry;
+  \item integrate simulation-derived feedforward compensation so that predicted trajectory-dependent loading can be added to the feedback controller during representative leg motion;
+  \item benchmark feedback-only and feedback-plus-feedforward control using RMS angular error, peak angular error, and repeatability across repeated trials.
 \end{itemize}
 
 \section{Literature Review}
 
-The current project builds directly on a prior hexapod platform developed by myself. That experience defines the specific limitations this work is designed to address and grounds the subsequent review of relevant literature in concrete, observed problems rather than theoretical concerns.
+A substantial body of work addresses small legged platforms, smart-servo architectures, embedded hobby-servo conversion, and model-based compensation for legged joints~\cite{saranli2001rhex,barragan2018minirhex,interbotixphantomx,steindl2020bruce,openservo2018,dtuinspectionrobot,backstrom2020servoarm,lynch2017modernrobotics}. This review focuses on the sources that define the actuator and control trade-offs most relevant to the present project. It first reviews existing hexapod platforms, then compares servo-control approaches, and finally considers forms of feedforward compensation that remain practical for constrained joint hardware.
+
+\subsection{Modern hexapod platforms}
+
+In what follows, three platform examples are used to span the design space relevant to this project. MiniRHex was selected because it shows the constraints of a compact, low-cost hexapod using DYNAMIXEL smart servos. PhantomX was selected because it retains the three-degree-of-freedom leg structure while using networked AX-series smart servos. Bruce was selected because it demonstrates the opposite end of the design space: a larger research hexapod using higher-performance actuation and model-based control. These examples provide a basis for comparing actuator access, wiring complexity, telemetry, and control authority.
+
+\subsubsection{MiniRHex}
+
+MiniRHex is a small open-source hexapod developed for teaching and outreach, with six compliant RHex-style legs and one actuator per leg~\cite{barragan2018minirhex}. The platform uses the Dynamixel XL-320 because it meets the project's speed, rotation, and cost requirements, but the actuator cannot provide clean continuous rotation and position tracking simultaneously, so the robot uses a custom position-tracking workaround in wheel mode~\cite{barragan2018minirhex}. Figure~\ref{fig:minirhex_platform} shows the packaged platform and a payload-carrying demonstration from video footage.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{minirhex_platform}
+    \caption{Packaged platform, showing the one-actuator-per-leg layout~\cite{minirhexgallery}.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{minirhex_video_206}
+    \caption{Payload-carrying demonstration screenshot at 2:06 from video footage~\cite{minirhexvideo}.}
+  \end{subfigure}
+  \caption{MiniRHex platform views from the official gallery and project video.}
+  \label{fig:minirhex_platform}
+\end{figure}
+
+MiniRHex is relevant because it shows the practical constraints of a small servo-based hexapod: low actuator cost, simple wiring, limited onboard space, and the need to work around the actuator's internal control limits in software. Those constraints are still relevant to the present project even though the mechanical design is different, because the current robot also aims to use low-cost actuators in a compact platform. Its limitation for the present work is direct: with only one actuator per leg, unlike the three-actuator leg used here, MiniRHex avoids the multi-joint control problem that motivates this project.
+
+\subsubsection{PhantomX AX Metal Hexapod}
+
+The PhantomX AX Metal Hexapod is an open-source hexapod kit developed by Interbotix with six three-degree-of-freedom legs driven by DYNAMIXEL AX-series smart servos and an Arduino-compatible ArbotiX controller~\cite{interbotixphantomx}. Interbotix describes the platform as using an inverse-kinematics-driven gait engine with multiple walking gaits, positioning it as a programmable development platform rather than a fixed demonstration robot~\cite{interbotixphantomx}. The DYNAMIXEL AX family communicates over a TTL multidrop serial bus, and a representative actuator in that family, the AX-12A, exposes readable position, speed, load, voltage, and temperature data while also providing configurable joint limits and motion parameters within the servo's own control table~\cite{robotisax12a}. Figure~\ref{fig:phantomx_platform} shows a PhantomX platform and a representative AX-12A actuator. This makes PhantomX a useful middle-ground reference between a simple PWM hobby-servo robot and a much larger custom-actuated research machine.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.73\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{phantomx_platform}
+    \caption{PhantomX platform screenshot from video footage~\cite{zenta2012phantomxvideo}.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.18\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{ax12a_product}
+    \caption{Representative AX-12A actuator~\cite{robotisax12a}.}
+  \end{subfigure}
+  \caption{PhantomX AX Metal Hexapod platform and representative actuator.}
+  \label{fig:phantomx_platform}
+\end{figure}
+
+PhantomX is relevant because it preserves the multi-joint leg architecture that matters to the present project while improving actuator networking and observability compared to conventional hobby servos. A shared digital bus reduces wiring complexity, and the readable actuator state shows what becomes possible once each joint is more than a blind PWM endpoint. Its limitation for the present work is that the low-level controller and power electronics remain inside each smart servo. The platform therefore offers better integration than a standard hobby-servo hexapod, but still does not provide the same degree of direct per-joint controller ownership, telemetry tailoring, or feedforward integration that a custom external driver board can target.
+
+\subsubsection{Bruce}
+
+Bruce is a dynamic hexapod developed by CSIRO for rough-terrain locomotion~\cite{steindl2020bruce}. It uses six three-degree-of-freedom legs driven by Apptronik linear series elastic actuators. Its controller combines CPG-style gait generation, task-frame impedance control, and feedforward inverse-dynamic torque support during walking~\cite{steindl2020bruce}. Figure~\ref{fig:bruce_platform} shows the Bruce platform and a leg-test frame from project video footage.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{bruce_platform}
+    \caption{Bruce hexapod~\cite{steindl2020bruce}.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{bruce_video_021}
+    \caption{Leg-test screenshot at approximately 0:21 from project video footage~\cite{brucevideo}.}
+  \end{subfigure}
+  \caption{Bruce platform and leg-test footage.}
+  \label{fig:bruce_platform}
+\end{figure}
+
+The control implementation in Bruce is particularly relevant. The software is split into a locomotion engine, which generates foot trajectories from commanded velocities, and a tip controller, which converts those trajectories into joint commands~\cite{steindl2020bruce}. The trajectory engine uses linked Bezier curves for stance and swing phases, while the tip controller combines stance-force solving, inverse kinematics, inverse dynamics, and task-frame impedance control, with the kinematic and dynamic calculations implemented using the Rigid Body Dynamics Library~\cite{steindl2020bruce}. This is useful to the present report because it shows a clear control architecture in which feedforward and feedback are integrated deliberately rather than added as isolated features.
+
+Bruce is relevant because it shows the value of higher-fidelity actuation, compliant control, and feedforward compensation in a legged robot with three-degree-of-freedom legs. Its limitation for the present work is equally clear: the hardware stack is too large, expensive, and specialised to transfer directly to a small hobby-servo hexapod.
+
+\subsubsection{Comparison and relevance to the present work}
+
+\begin{table}[H]
+  \centering
+  \caption{Selected modern hexapod platforms.}
+  \label{tab:modern_hexapod_platforms}
+  \begin{tabularx}{\linewidth}{lYYY}
+    \toprule
+    & \textbf{MiniRHex} & \textbf{PhantomX} & \textbf{Bruce} \\
+    \midrule
+    \textbf{Actuation} & One smart servo per leg & AX-series smart servos, 3-DoF legs & Linear series elastic actuators \\
+    \textbf{Control} & Internal loop; custom tracking & Smart-servo bus; IK gait engine & CPG, impedance, feedforward \\
+    \textbf{Relevance} & Small, low-cost reference & Multi-joint smart-servo reference & High-performance control reference \\
+    \textbf{Limitation} & 1-DoF legs; limited control access & Internal servo loops still closed & Large, costly hardware \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
+
+MiniRHex shows what is gained by simplifying a hexapod around low-cost smart servos: the platform is compact, inexpensive, and easy to package, but that simplicity comes with one actuator per leg and limited joint-level control. PhantomX fills the middle ground. It retains a compact servo-based architecture while keeping three-joint legs and networked actuators, so it is much closer to the structure of the present project. Bruce shows the opposite extreme: its actuators and layered control system provide much greater control authority, but only at far higher cost, scale, and system complexity.
+
+The present work is positioned between PhantomX and Bruce, while remaining closer to the mass and packaging limits of a small servo-based robot. The aim is not to reproduce a large dynamic hexapod at miniature scale, but to recover more joint-level controller authority than a stock smart-servo architecture provides in a compact, low-cost, multi-joint platform. This comparison provides the reference point for reviewing the prior platform before turning to embedded servo control and feedforward compensation.
 
 \subsection{Prior hexapod platform}
 
-A fully custom hexapod robot was designed and built as a personal project prior to the current work. The project began in simulation: a purpose-built C++ application using OpenGL and GLFW for rendering and ImGUI for live parameter control. The simulation implemented a closed-form inverse kinematics solver to compute the three joint angles per leg (hip rotation, shoulder, and elbow) from a target foot position in three-dimensional space. Gait sequences for walking, turning, and a rest pose were designed and verified in simulation before any hardware was assembled. Figure~\ref{fig:prior_sim} shows the full hexapod simulation alongside the single-leg IK testbench used to validate the kinematic solution.
+The platform comparison above provides the basis for interpreting the first-generation hexapod that motivated this work. A fully custom hexapod robot was designed and built before the present project. The project began in simulation: a purpose-built C++ application using OpenGL and GLFW for rendering and ImGUI for live parameter control. The simulation implemented a closed-form inverse kinematics solver to compute the three joint angles per leg from a target foot position in three-dimensional space. Gait sequences for walking, turning, and a rest pose were designed and verified in simulation before any hardware was assembled. Figure~\ref{fig:prior_sim} shows the full hexapod simulation alongside the single-leg IK testbench used to validate the kinematic solution.
 
 \begin{figure}[H]
   \centering
@@ -184,7 +274,7 @@ A fully custom hexapod robot was designed and built as a personal project prior 
   \label{fig:prior_sim}
 \end{figure}
 
-The physical robot used a 3D-printed chassis with 18 MG996R hobby servos — three per leg — connected directly to the digital output pins of an Arduino Mega (pins D22--D45). Power was supplied by an 11.1\,V, 3000\,mAh LiPo battery stepped down to 5\,V via an 8\,A DC-DC buck converter. Wireless control was implemented using an HM-10 Bluetooth Low Energy module on the robot, paired with a custom handheld remote built around an Arduino Nano 33 BLE. The completed robot walked and turned under remote control. Figure~\ref{fig:prior_robot} shows the robot during operation.
+The physical robot used a 3D-printed chassis with 18 MG996R hobby servos, three per leg, connected directly to the digital output pins of an Arduino Mega. Power was supplied by an 11.1\,V, 3000\,mAh LiPo battery stepped down to 5\,V using an 8\,A DC-DC buck converter. Wireless control was implemented using an HM-10 Bluetooth Low Energy module on the robot, paired with a custom handheld remote built around an Arduino Nano 33 BLE. The completed robot walked and turned under remote control. Figure~\ref{fig:prior_robot} shows the robot during operation.
 
 \begin{figure}[H]
   \centering
@@ -193,7 +283,7 @@ The physical robot used a 3D-printed chassis with 18 MG996R hobby servos — thr
   \label{fig:prior_robot}
 \end{figure}
 
-Despite achieving basic locomotion, the build exposed several concrete limitations. The wiring was the most immediately apparent: 18 individual servo cables routed from the body to the Arduino, each carrying its own signal, power, and ground connection, with no consolidation. Figure~\ref{fig:prior_wiring} shows the reference wiring diagram used during construction alongside a photograph of the actual internal state of the robot — the result was a dense tangle of hand-labelled cables that was difficult to maintain and prone to connection failures.
+Compared with the platforms reviewed earlier, this robot sat at the low-cost PWM-servo end of the design space. The wiring limitation was immediate: 18 individual servo cables were routed from the body to the Arduino, each carrying its own signal, power, and ground connection, with no consolidation. Figure~\ref{fig:prior_wiring} shows the reference wiring diagram used during construction alongside the physical wiring inside the robot. The result was difficult to maintain and prone to connection faults.
 
 \begin{figure}[H]
   \centering
@@ -212,85 +302,116 @@ Despite achieving basic locomotion, the build exposed several concrete limitatio
   \label{fig:prior_wiring}
 \end{figure}
 
-The control limitations were more fundamental. MG996R servos contain an internal PID controller with fixed, inaccessible gains that cannot be tuned for a specific joint. During walking, the hip joint — which rotates the leg about the body axis and carries the rotational inertia of the entire limb — jittered visibly around the target angle because the fixed gains could not compensate for the mechanical load. Servos also failed frequently through overheating and over-extension, likely caused by uneven foot placement distributing load incorrectly across legs. The power regulation arrangement compounded these issues: the off-shelf buck converter was large, heavy, and offered no visibility into current consumption per servo. Collectively, these limitations established a clear direction for the next iteration: per-joint closed-loop control with tunable gains, consolidated wiring, and integrated power monitoring.
+The control limitation was more fundamental. MG996R servos contain an internal PID controller with fixed, inaccessible gains that cannot be tuned for a specific joint. During walking, the hip joint, which rotates the leg about the body axis and carries the rotational inertia of the limb, jittered visibly around the target angle because the fixed gains could not compensate for the mechanical load. Servos also failed through overheating and over-extension, likely caused by uneven foot placement distributing load incorrectly across legs. The power regulation arrangement compounded these issues: the off-the-shelf buck converter was large, heavy, and offered no visibility into current consumption per servo. These limitations align with the platform comparison above: the system needed consolidated wiring, joint feedback, tunable local control, and a path toward model-informed compensation.
 
-\subsection{Modern hexapod platforms}
+\subsection{Embedded servo control and hobby-servo conversion}
+The central limitation of a stock hobby servo is not the motor or gearbox, but the controller hidden inside the case. A PWM command gives a target position, but the internal gains are fixed, the measured state is largely inaccessible, and there is usually no provision for persistent per-joint calibration or configuration. Solutions range from adding external sensors to read joint position — without touching the servo itself — to replacing the internal controller board entirely.
 
-This subsection reviews two modern hexapod platforms that help frame the actuator and control choices relevant to the present project. MiniRHex represents a compact, low-cost servo-based platform. Bruce represents a larger system built around higher-performance actuation and model-based control.
-
-\subsubsection{MiniRHex}
-
-MiniRHex is a small open-source hexapod developed for teaching and outreach, with six compliant RHex-style legs and one actuator per leg~\cite{barragan2018minirhex}. The platform uses the Dynamixel XL-320 because it meets the project's speed, rotation, and cost requirements, but the actuator cannot provide clean continuous rotation and position tracking simultaneously, so the robot uses a custom position-tracking workaround in wheel mode~\cite{barragan2018minirhex}. Figure~\ref{fig:minirhex_platform} shows the MiniRHex platform.
+The lower end of this range is worth establishing because it separates two problems that can appear to be one: measuring what a joint does, and controlling how it does it. The Braccio sensor kit for the educational Braccio arm represents this approach: it adds external potentiometers to measure joint angles for logging and replay, improving observability without touching the servo electronics~\cite{rasic2020braccio}. This shows that reading joint position is achievable without opening the servo, but it leaves the fixed internal gains entirely in place. The present project requires both — position readback to close a feedback loop, and tunable gains to make that loop work at each joint. Braccio provides the first but not the second, which is why the remaining examples each go further. Figure~\ref{fig:servo_conversions} shows three such conversion approaches.
 
 \begin{figure}[H]
   \centering
-  \includegraphics[width=0.68\linewidth]{minirhex_platform}
-  \caption{MiniRHex platform~\cite{barragan2018minirhex}.}
-  \label{fig:minirhex_platform}
+  \begin{subfigure}[t]{0.20\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{openservo_conversion}
+    \caption{OpenServo controller board~\cite{openservo2018}.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.34\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{dtu_servo_conversion}
+    \caption{Modified servo used in the DTU inspection robot~\cite{dtuinspectionrobot}.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.34\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{servoproject_conversion}
+    \caption{ServoProject micro-servo conversion~\cite{backstrom2020servoarm}.}
+  \end{subfigure}
+  \caption{Representative embedded servo conversion examples.}
+  \label{fig:servo_conversions}
 \end{figure}
 
-MiniRHex is relevant because it shows the practical constraints of a small servo-based hexapod: low actuator cost, simple wiring, limited onboard space, and the need to work around the actuator's internal control limits in software. Those constraints are still relevant to the present project even though the mechanical design is different, because the current robot also aims to use low-cost actuators in a compact platform. Its limitation for the present work is direct: with only one actuator per leg, unlike the three-actuator leg used here, MiniRHex avoids the multi-joint control problem that motivates this project.
+OpenServo is the clearest foundational example of recovering that hidden control layer~\cite{openservo2018}. It physically replaces the stock servo board with an AVR-based controller and MOSFET H-bridge, moving the control loop into new embedded electronics. That new board exposes position, speed, voltage, and power over I2C/TWI, adds configurable PID gains and motion profiling, and stores configuration in EEPROM~\cite{openservo2018}. This is directly relevant to the present project because it shows that a cheap servo can be turned into a networked embedded actuator with readable state and tunable local control. Its limitation for the present work is that it still depends on a retrofit inside the original servo shell, so the packaging, thermal, motor, and gearbox constraints of the consumer actuator remain in place.
 
-\subsubsection{Bruce}
+The DTU inspection robot is the first example in this review where the smart-servo idea is used inside a larger multi-actuator system rather than as an isolated conversion~\cite{dtuinspectionrobot}. Its Hitec HS646-WP servos are fitted with a modified OpenServo PCB and ATmega168 firmware, allowing each actuator to sample position, voltage, current, and back-EMF, run local PID control at \SI{500}{\hertz}, and store gains, addresses, and position limits in EEPROM~\cite{dtuinspectionrobot}. The important point for the present report is not only that the actuator gains embedded sensing and local control, but that actuator management becomes a system problem: configuration, telemetry, and supervision must now be handled across many devices on a shared I2C bus. That makes the source highly relevant to a compact hexapod, where many joints must be coordinated in limited space. Its limitation is that, as actuator count rises, communication bandwidth, timing, and embedded robustness become system-level constraints that can no longer be ignored.
 
-Bruce is a dynamic hexapod developed by CSIRO for rough-terrain locomotion~\cite{steindl2020bruce}. It uses six three-degree-of-freedom legs driven by Apptronik linear series elastic actuators. Its controller combines CPG-style gait generation, task-frame impedance control, and feedforward inverse-dynamic torque support during walking~\cite{steindl2020bruce}. Figure~\ref{fig:bruce_platform} shows the Bruce platform.
-
-\begin{figure}[H]
-  \centering
-  \includegraphics[width=0.78\linewidth]{bruce_platform}
-  \caption{Bruce hexapod~\cite{steindl2020bruce}.}
-  \label{fig:bruce_platform}
-\end{figure}
-
-The control implementation in Bruce is particularly relevant. The software is split into a locomotion engine, which generates foot trajectories from commanded velocities, and a tip controller, which converts those trajectories into joint commands~\cite{steindl2020bruce}. The trajectory engine uses linked Bezier curves for stance and swing phases, while the tip controller combines stance-force solving, inverse kinematics, inverse dynamics, and task-frame impedance control, with the kinematic and dynamic calculations implemented using the Rigid Body Dynamics Library~\cite{steindl2020bruce}. This is useful to the present report because it shows a clear control architecture in which feedforward and feedback are integrated deliberately rather than added as isolated features.
-
-Bruce is relevant because it shows the value of higher-fidelity actuation, compliant control, and feedforward compensation in a legged robot with three-degree-of-freedom legs. Its limitation for the present work is equally clear: the hardware stack is too large, expensive, and specialised to transfer directly to a small hobby-servo hexapod.
-
-\subsubsection{Comparison and relevance to the present work}
+ServoProject is the highest-control-fidelity example in this section because it uses a more comprehensive sensor suite to change what kind of controller can be built~\cite{backstrom2020servoarm}. The modified servo combines an output-shaft magnetic encoder, a motor-side optical encoder, current sensing, and embedded per-servo control, while a master controller communicates over a full-duplex serial bus~\cite{backstrom2020servoarm}. That architecture is used to address backlash and dynamic trajectory tracking directly: the motor-side encoder supports a faster inner loop outside the gearbox backlash path, while the output encoder corrects true joint position. This is the clearest bridge from actuator conversion into the controller design developed later in this report, because it shows that once measurement improves, loop structure becomes as important as the actuator itself. Its limitation for the present project is that the sensing, mechanics, and software burden are too high to transfer directly to a very small, low-cost, many-joint hexapod.
 
 \begin{table}[H]
   \centering
-  \caption{Selected modern hexapod platforms.}
-  \label{tab:modern_hexapod_platforms}
-  \begin{tabularx}{\linewidth}{lYY}
+  \caption{Comparison of servo-control approaches relevant to a small hexapod.}
+  \label{tab:servo_control_comparison}
+  \small
+  \begingroup
+  \hyphenpenalty=10000
+  \exhyphenpenalty=10000
+  \begin{tabularx}{\linewidth}{>{\RaggedRight\arraybackslash}p{0.22\linewidth}YY}
     \toprule
-    & \textbf{MiniRHex} & \textbf{Bruce} \\
+    \textbf{Approach} & \textbf{Capability for a small hexapod} & \textbf{Main limitation} \\
     \midrule
-    \textbf{Actuation} & One smart servo per leg & Linear series elastic actuators \\
-    \textbf{Control} & Internal loop; custom tracking & CPG, impedance, feedforward \\
-    \textbf{Relevance} & Small, low-cost reference & High-performance control reference \\
-    \textbf{Limitation} & 1-DoF legs; limited control access & Large, costly hardware \\
+    Stock PWM hobby servo & Low-cost position command with simple electronics, but individual signal and power wiring for each servo & Fixed gains and hidden joint state limit controller tuning and fault diagnosis \\
+    DYNAMIXEL smart servo & Bus-connected actuator with readable state and configurable motion parameters & Low-level controller and power electronics remain inside the actuator \\
+    Embedded conversion & Replacement control board recovers tunable local control, richer sensing, and shared communication & Retrofit complexity increases with sensing requirements and actuator count \\
+    \bottomrule
+  \end{tabularx}
+  \endgroup
+\end{table}
+
+Table~\ref{tab:servo_control_comparison} summarises the progression shown by these sources. Feedback-only augmentation provides joint-state visibility, but leaves the stock control law untouched. DYNAMIXEL actuators demonstrate the value of readable actuator state within a bus-connected smart servo~\cite{robotisax12a}, while embedded smart-servo retrofits recover tunable local control, telemetry, and persistent configuration~\cite{openservo2018,dtuinspectionrobot,backstrom2020servoarm}. The remaining gap is a compact, low-cost, many-joint solution for a small legged robot that recovers useful smart-actuator features without the packaging and implementation burden of a complete custom actuator at every joint. This is the point of departure for the next section, which asks what form of feedforward remains genuinely transferable once measurement and control authority are available at the joint, but actuation is still constrained by small hobby-servo hardware.
+
+\subsection{Model-based feedforward compensation in legged joints}
+
+\subsubsection{Why feedforward is used}
+Feedback corrects tracking error after a deviation has already appeared, which makes it essential for stability, disturbance rejection, and robustness to modelling error. In a legged joint, however, not all load variation is unexpected. Gravity, limb inertia, and acceleration-dependent torque demand change in systematic ways as the joint moves, so part of the required control effort can be estimated in advance. A model-based feedforward term exploits that structure by adding a predicted contribution before the error develops, reducing the burden on the feedback loop. The purpose is therefore not to replace feedback, but to combine prediction with correction so that the joint follows a commanded trajectory with less lag, less overshoot, and less sensitivity to changes in limb orientation and motion.
+
+\subsubsection{Main forms of model-based feedforward}
+One practical reduced form is \emph{PID control plus gravity compensation}. In \emph{Modern Robotics}, Lynch and Park present this as an approximation to the full computed-torque law when the full dynamics are too complex to evaluate at servo rate or are not modelled well enough, particularly when the desired velocities and accelerations are small~\cite[pp.~434--435]{lynch2017modernrobotics}. This makes gravity compensation attractive because it retains the most obvious predictable load term while avoiding the full burden of dynamic evaluation.
+
+A more complete approach is \emph{computed torque control}. This is a feedforward-plus-feedback linearizing controller, also called the inverse-dynamics controller or computed-torque controller, in which the model terms \(M(\theta)\) and \(h(\theta,\dot{\theta})\) are used to convert desired joint accelerations into torques while cancelling the nonlinear state-dependent dynamics~\cite[pp.~431--432, 452]{lynch2017modernrobotics}. This is the clearest benchmark for full model-based compensation, because it uses the desired position, velocity, and acceleration together with the robot model to define the commanded torque along an arbitrary trajectory.
+
+A third family is \emph{feedforward control}. Here the controller uses the desired position, velocity, and acceleration from a trajectory generator together with a model of the robot dynamics to calculate the torque required at each instant in time before tracking error develops~\cite[pp.~428--430]{lynch2017modernrobotics}. Pure feedforward is not sufficient in practice because modelling errors are unavoidable, so it is normally combined with feedback~\cite[pp.~429--431]{lynch2017modernrobotics}. For the present report, this is the most relevant source term for what is later implemented in a trajectory-based joint-level form.
+
+Finally, \emph{iterative learning control (ILC)} is a method for repetitive tasks in which errors from the previous execution are used to modify the feedforward control for the next execution, improving performance over repeated trials and driving the execution error toward zero~\cite[p.~450]{lynch2017modernrobotics}. It is distinguished from adaptive control by the fact that the learned information is typically nonparametric and useful for a specific trajectory~\cite[p.~450]{lynch2017modernrobotics}. In the present discussion it is therefore relevant as background for cyclic motions such as gait, but not as the core method adopted here.
+
+\subsubsection{Relevance and limits for small hobby-servo hexapods}
+\begin{table}[H]
+  \centering
+  \caption{Practical relevance of feedforward options for the present platform.}
+  \label{tab:feedforward_relevance}
+  \begin{tabularx}{0.92\linewidth}{lYYY}
+    \toprule
+    \textbf{Method} & \textbf{Predicts} & \textbf{Main limitation} & \textbf{Use here} \\
+    \midrule
+    PID + gravity & Limb weight & Fast dynamics & Adopted \\
+    Computed torque & Full torque & Servo mismatch & Benchmark \\
+    Feedforward & Motion load & Model error & Adopted \\
+    ILC & Repeat bias & One-off motion & Background \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-MiniRHex shows what is gained by simplifying a hexapod around low-cost smart servos: the platform is compact, inexpensive, and easy to package, but that simplicity comes with one actuator per leg and limited joint-level control. Bruce shows the opposite trade-off. Its actuators and layered control system provide much greater control authority, but only at far higher cost, scale, and system complexity.
+Table~\ref{tab:feedforward_relevance} summarises what each method predicts and its main limitation. PID control plus gravity compensation predicts limb weight well, but does little for faster dynamic effects, while feedforward control extends the prediction to motion load but remains limited by model error~\cite[pp.~428--430, 434--435]{lynch2017modernrobotics}. Computed torque control remains the benchmark because it targets the full torque~\cite[pp.~431--432, 452]{lynch2017modernrobotics}; for a small hobby-servo hexapod, however, the resulting model demand, real-time evaluation cost, and sensitivity to servo mismatch make it less transferable in practice. ILC is most useful where the same motion repeats, because it uses previous executions to refine the next feedforward input~\cite[p.~450]{lynch2017modernrobotics}. It therefore remains background rather than a core method here.
 
-The clear improvement is to balance the project between these two approaches. To keep the mass, cost, and packaging constraints of a small servo-based robot, but still use three actuators per leg to retain the larger degree of freedom. The aim is not to reproduce Bruce at small scale, but to bring more joint-level control authority into a compact, low-cost, multi-joint hexapod. This is why the review now turns to embedded servo control, closed-loop position control, and feedforward compensation.
+\subsubsection{Position of the present work}
+The present work therefore does not attempt to reproduce the full control stack of a platform such as Bruce at miniature scale. Instead, it adopts two practical forms of model-based feedforward that suit the available hardware: gravity compensation and feedforward control applied in a trajectory-based joint-level form. The contribution is therefore not full computed torque control of a small hexapod, but a practical step from feedback-only hobby-servo actuation toward joint control that combines local feedback with transferable model-based prediction.
 
-\subsection{Embedded servo control and hobby-servo conversion}
-Stock hobby servos are convenient because they reduce actuation to a single PWM command, but that convenience comes with fixed internal gains, minimal state feedback, limited calibration support, and no persistent per-joint configuration. The Braccio sensor kit shows the weakest intervention that still adds value: it leaves the stock servo electronics in place and adds external joint sensing so achieved angle can be measured, logged, and replayed for calibration and teach-by-demonstration~\cite{rasic2020braccio}. That improves observability, but the internal control loop remains hidden and untunable. The stronger literature thread therefore concerns embedded actuator intelligence, where sensing, control, communication, and configuration are moved into the actuator electronics rather than left behind a PWM interface.
-
-OpenServo is the clearest foundational example of that shift. It replaces the stock controller board inside a hobby servo with an AVR-based board and MOSFET H-bridge, runs the control loop locally, exposes command and telemetry over I2C/TWI, and provides readable position, speed, voltage, and power together with configurable PID gains, motion profiling, and EEPROM-stored configuration~\cite{openservo2018}. For the present project, its importance is direct: it shows that a cheap servo can be turned into a networked embedded actuator with tunable local control rather than a blind PWM endpoint. Its limitation is equally clear: it remains a physical retrofit inside a consumer servo shell, so the packaging, motor, gearbox, and thermal constraints of the original actuator are still inherited by the final system.
-
-The DTU inspection robot develops the same idea in a robot-facing setting rather than as a standalone servo hack. In that platform, Hitec HS646-WP servos are augmented with a modified OpenServo PCB and ATmega168 firmware that samples position, voltage, armature current, and back-EMF, runs local PID control at \SI{500}{\hertz}, stores gains, addresses, and position limits in EEPROM, and exposes actuator management over I2C through an RHD plugin that can supervise multiple servos~\cite{dtuinspectionrobot}. This is especially relevant because it shows embedded servo intelligence used as part of a larger multi-actuator robot architecture, where configuration, telemetry, and control settings must be handled systematically rather than one servo at a time. Its limitation is also useful for the present work: once servo count rises, firmware bugs, communication loss, and bus-rate limits become system-level constraints rather than local implementation details.
-
-ServoProject represents the higher-performance end of the same direction. The project uses a magnetic encoder on the output shaft, a custom optical encoder inside the DC motor, current sensing, and embedded per-servo control, while a master controller communicates over a full-duplex serial bus~\cite{backstrom2020servoarm}. This architecture is used to address backlash and trajectory tracking directly, not just static position holding: the motor-side encoder supports a faster inner loop outside the gearbox backlash path, while the output encoder corrects true joint position~\cite{backstrom2020servoarm}. For the present report, this is the clearest bridge into the next section, because it shows that once richer measurement is available, loop structure becomes as important as actuator hardware. Its limitation for a small hexapod is practical: the sensing, mechanics, and software stack are too heavy and complex to replicate directly across many very small joints.
-
-Taken together, these sources show a clear progression. Feedback-only augmentation improves observability but does not recover true control authority; embedded smart-servo retrofits recover tunable control, telemetry, and persistent configuration; richer multi-sensor actuator designs improve tracking quality further by supporting more deliberate loop structures. Moti and OpenServoCAN reinforce the same direction by treating small actuators as addressed bus devices with readable state, open control settings, and more deliberate network architecture~\cite{stedman2014moti,provatos2020openservocan}. The remaining gap is a compact, low-cost, many-joint solution tailored to a small legged robot rather than to one-off servo retrofits or larger custom actuators. This is the point of departure for the next two sections: once measurement and control authority are recovered from the actuator, the next questions are how to structure the position loop and how to use measured state for model-based feedforward compensation.
-
-\subsection{Closed-loop position control for low-cost actuators}
-Once position feedback is available, the next question is how to structure a practical closed-loop controller around inexpensive actuators with non-ideal mechanics, limited sensing resolution, and rapidly changing joint loads. Literature in this area is directly relevant to the per-joint PID architecture developed in this project, particularly where gain selection, reference shaping, and tracking accuracy are discussed under embedded resource constraints.
-
-\subsection{Model-based feedforward compensation in legged joints}
-The final strand of literature concerns the use of mechanical or dynamic models to reduce the burden on feedback control. In legged systems, feedforward terms are used to compensate for gravity, inertial loading, and rapid trajectory changes, improving tracking without requiring excessively high feedback gains. This is the most direct conceptual bridge from the platform survey above to the simulation-coupled feedforward term developed in the present work.
+\subsection{General trends across the reviewed work}
+Across the reviewed work, three trends define the design space for this project. First, wiring and actuator management move from individual PWM connections toward shared buses or distributed embedded control. Second, useful joint control depends on measured state as well as commanded motion: position, load, current, voltage, or temperature telemetry all improve the ability to tune and protect the system. Third, higher-performance legged robots use model-based prediction to reduce the burden on feedback, but the cost, actuator quality, and computational requirements increase quickly. The present project is therefore positioned in the middle of this landscape: it aims to recover more local control authority than a stock hobby-servo platform, while remaining closer to the cost and packaging constraints of a small hexapod than a research-grade dynamic machine.
 
 \subsection{Literature review conclusion}
-The literature review defines the specific gap addressed by this project: a compact and practical driver platform that is tailored to the constraints of small legged robots rather than adapted from larger actuator systems or high-end research actuators. The surveyed platforms show that compact servo-based robots remain attractive because they are accessible and easy to package, while higher-performance machines demonstrate the value of tunable local control and feedforward compensation. The present work is positioned between these two extremes, aiming to bring more of that control authority into a low-cost embedded platform for a small hexapod.
+Taken together, the reviewed work defines a three-tier landscape. At one end, larger and more specialised platforms such as Bruce show the value of richer actuation, tunable local control, and model-based compensation. At the other, compact hobby-servo platforms remain attractive because they are accessible, lightweight, and easy to package, but they typically offer limited joint-level sensing and little practical scope for controller tuning or feedforward compensation. PhantomX occupies the middle ground, combining multi-joint legs with networked smart servos and readable actuator state, but its low-level control and power electronics remain inside each actuator. The prior platform confirmed the practical effect of these limitations in a small three-degree-of-freedom hexapod leg. The literature therefore leaves a gap for a compact, low-cost, multi-joint hexapod platform that recovers local control authority and measurable joint state, while using a reduced form of model-based feedforward that remains practical for small hobby-servo hardware. The present work is positioned to address that gap through a custom servo driver board, per-joint closed-loop position control, and trajectory-coupled feedforward compensation.
+
+
+\bigskip
+% \noindent\textcolor{red}{\rule{\linewidth}{1pt}}
+% \begin{center}
+%   \textcolor{red}{\textbf{PLACEHOLDER — Sections beyond this point are AI-generated scaffold text only. They do not represent work carried out.}}
+% \end{center}
+% \noindent\textcolor{red}{\rule{\linewidth}{1pt}}
+\bigskip
 
 \section{Design and fabrication}
 
-\subsection{Design requirement}
+\subsection{Design requirements}
 \label{sec:design-requirement}
 The board requirements are driven by the practical demands of a small hexapod platform. At this stage, the design requirements can be summarised as shown in Table~\ref{tab:requirements}.
 
@@ -306,19 +427,158 @@ The board requirements are driven by the practical demands of a small hexapod pl
     Compact footprint & The final hardware must fit within the body envelope of the robot and avoid unnecessary increases in mass and rotational inertia. \\
     Stable power delivery & The power system must tolerate short current spikes from multiple servos without repeated brownout events or excessive supply ripple. \\
     Clean integration & Connectors, routing, and board layout should reduce cable clutter and simplify assembly, maintenance, and troubleshooting. \\
-    Firmware extensibility & The embedded software should support calibration, test instrumentation, and future expansion toward richer feedback or higher-level control. \\
+    Firmware extensibility & The firmware should support calibration, telemetry, and parameter tuning without needing to be repeatedly restructured as the leg controller develops. \\
     \bottomrule
   \end{tabularx}
 \end{table}
 
-\subsection{Mechanical Design}
-The mechanical design section will describe how the board geometry, connector placement, and mounting arrangement were chosen to suit the internal packaging of the robot. This includes the relationship between the board outline and the body structure, the accessibility of cable runs, and any compromises made to balance compactness against ease of manufacture and maintenance.
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Explain why these requirements are specific to a single hexapod leg controller rather than a generic servo driver board.
+  \item State how multi-servo support, compact footprint, stable power delivery, and clean integration influenced the later design choices.
+  \item Tie firmware extensibility to calibration, telemetry, and parameter tuning.
+  \item Add a short linking sentence at the end of the subsection to point forward to the CAD, electronic, and firmware design sections.
+\end{itemize}
+
+\subsection{CAD and Mechanical Integration}
+This section presents the CAD and mechanical development of the test platform. It includes the progression from the initial single-servo concept to the final leg assembly used for controller validation and feedforward testing. The mechanical design work was used to move the test hardware closer to the structure of the intended hexapod robot while supporting practical integration of the board. The section therefore focuses on the main design stages and the integration choices made during development.
+
+\subsubsection{Early concept development}
+Development began with a first-generation single-servo concept inspired by the OpenServo control board~\cite{openservo2018}. The aim was to produce a less compact version of the intended final micro-servo board that could still fit within the existing housing, providing a practical platform for tuning PID values on a single actuator. Figure~\ref{fig:firstgen_concept} shows this initial concept and the corresponding board arrangement.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.42\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{firstgen}
+    \caption{First-generation single-servo board.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.54\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{firstgen_board}
+    \caption{First-generation PCB board design.}
+  \end{subfigure}
+  \caption{Early single-servo proof-of-concept hardware.}
+  \label{fig:firstgen_concept}
+\end{figure}
+
+The design then moved toward a leg-based concept. Integrating all ADC channels onto one board, powering all servos on a leg from the same board, and simplifying both power distribution and communication at the leg level made this arrangement more suitable for the intended hexapod platform. A chained approach could have been made to work, but it would have been harder to program and integrate, so the design direction changed to a single-board-per-leg architecture.
+
+\subsubsection{CAD models and final leg assembly}
+Building on the earlier concept work, refined CAD models were produced for the final leg assembly. The leg model became the main mechanical reference for the project and was used to integrate the actuation, electronics, and overall geometry into a compact assembly representative of the intended hexapod platform.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}[t]{0.32\linewidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[width=\linewidth]{base_joint}
+    \caption{Base joint assembly.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.32\linewidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[width=\linewidth]{electronics_housing}
+    \caption{Electronics housing.}
+  \end{subfigure}\hfill
+  \begin{subfigure}[t]{0.32\linewidth}
+    \centering
+    \vspace{0pt}
+    \includegraphics[width=\linewidth]{end_effector}
+    \caption{End-effector assembly.}
+  \end{subfigure}
+  \caption{Final leg assembly CAD views.}
+  \label{fig:final_leg_assembly}
+\end{figure}
+
+\noindent\textbf{Base joint assembly.} The base joint assembly mounts the servo at the lower joint and provides the first stage of motion for the leg. It links the servo output to the rest of the mechanism and supports the remaining leg structure. The arrangement was kept compact so that the joint could carry the rest of the assembly without taking up unnecessary space.
+
+\noindent\textbf{Electronics housing.} The electronics housing forms the central section of the leg and contains the control PCB. Integrating the board directly into the leg allowed the sensing, actuation, and power hardware to be grouped in one place while still leaving access to the external connectors. This supported the single-board-per-leg approach used in the final design.
+
+\noindent\textbf{End-effector assembly.} The end-effector assembly completes the distal section of the leg and provides the final contact point of the mechanism. This section uses the longer joint arrangement and the double-connection arm layout to provide a more secure connection across the final stage of the leg. The resulting assembly is closer to the intended hexapod geometry than the earlier single-servo concept.
+
+\subsubsection{Calibration rig}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Describe the calibration disc mounted to a single servo.
+  \item Explain the role of the pointed servo arm and the chosen zero-degree reference.
+  \item State that the calibration rig was developed after the leg geometry itself.
+  \item Explain how the rig supported angle checking, controller validation, and feedforward work.
+\end{itemize}
+
+\subsubsection{Integration considerations}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item State that compactness was the first mechanical priority.
+  \item State that connector accessibility was the second priority.
+  \item Note any compromises between compact packaging, assembly, and ease of use.
+  \item Keep the focus here on design choices rather than test results.
+\end{itemize}
 
 \subsection{Electronic Design}
-The electronic design section will describe the microcontroller choice, servo signal generation strategy, power architecture, regulation, protection, and communication interfaces. Particular attention will be paid to the separation between logic and high-current servo paths, as this is central to overall reliability in a dense multi-servo system.
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Open with one short paragraph on the transition from \texttt{smart\_servo} to \texttt{smart\_servo\_v2}.
+  \item Keep the earlier board as context only rather than giving it a dedicated subsection.
+  \item In that opening paragraph, mention the beginner accessibility issues around the STM32 choice, the lack of accessible programming or UART pins, the single-servo focus, the missing integrated buck and regulator, the incorrect H-bridge wiring, and the later mixed-signal design learning that informed v2.
+\end{itemize}
+
+\noindent\textit{Existing draft note.} The electronic design section will describe the microcontroller choice, servo signal generation strategy, power architecture, regulation, protection, and communication interfaces. Particular attention will be paid to the separation between logic and high-current servo paths, as this is central to overall reliability in a dense multi-servo system.
+
+\subsubsection{Final board design}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item State what the final board needed to do for one hexapod leg.
+  \item Explain why three channels per board suited one leg at a time, modular expansion, and simpler I2C addressing.
+  \item Explain why the RP2040 was chosen in terms of cost, ADC capability, PWM flexibility, tooling, and beginner friendliness.
+  \item Mention that integrated regulation and drive hardware were deliberate decisions in the final board.
+  \item Mention external flash only in passing if it is needed for completeness.
+\end{itemize}
+
+\subsubsection{Practical design decisions}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item State that compact footprint was the first PCB priority.
+  \item State that connector accessibility was the second PCB priority.
+  \item Explain that package sizes were increased compared to v1 to make assembly and manufacture more practical.
+  \item Briefly mention that some IC choices changed because of component availability.
+  \item Cover power, motor drive, connectors, SWD, UART, and I2C as parts of the final board design without splitting them into many small subsections.
+  \item Leave testing and measured performance for Chapter 4.
+\end{itemize}
 
 \subsection{Firmware Design}
-The firmware design section will cover the software architecture used to initialise the board, command multiple servos, expose debugging interfaces, and support repeatable testing. It will also document how the firmware is structured to allow future extension toward additional sensing, calibration routines, and tighter integration with the wider robot control stack.
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Open with one short paragraph linking the earlier \texttt{leg} firmware work to the final firmware architecture.
+  \item Keep the rest of the section focused on the final firmware design rather than a long development history.
+\end{itemize}
+
+\noindent\textit{Existing draft note.} The firmware design section will cover the software architecture used to initialise the board, command multiple servos, expose debugging interfaces, and support repeatable testing. It will also document how the firmware is structured to allow future extension toward additional sensing, calibration routines, and tighter integration with the wider robot control stack.
+
+\subsubsection{Control architecture}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Describe the overall firmware structure.
+  \item Explain why this architecture suited repeatable bench control of the leg.
+  \item Cover the high-level organisation of the three servo channels.
+  \item Outline the main control or update flow at a high level.
+\end{itemize}
+
+\subsubsection{Angle measurement, filtering, and calibration}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Describe the ADC measurement path.
+  \item Cover the averaging and low-pass filtering stages.
+  \item Explain how raw readings are converted into a usable joint-angle estimate.
+  \item State why calibration and filtering were separated clearly before closed-loop control.
+\end{itemize}
+
+\subsubsection{Closed-loop position control}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Describe the main control mode or modes at a high level.
+  \item Explain how the closed-loop controller operates without dropping into excessive implementation detail.
+  \item State what signals are used as the main inputs and outputs.
+  \item Keep tuning results and measured behaviour for Chapter 4.
+\end{itemize}
+
+\subsubsection{DevLink telemetry and parameter tuning}
+\begin{itemize}[label=\textcolor{red}{\textbullet}, before=\color{red}]
+  \item Introduce DevLink as the main tooling and telemetry pipeline.
+  \item Explain how telemetry supported development and debugging.
+  \item Explain how exposed parameters supported controller tuning.
+  \item Mention teach or playback briefly here if needed, but do not give it a standalone subsection.
+\end{itemize}
 
 \section{Testing and analysis}
 

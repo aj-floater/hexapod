@@ -232,6 +232,127 @@
       \verb https://robomechanics.github.io/MiniRHex/
       \endverb
     \endentry
+    \entry{minirhexgallery}{online}{}{}
+      \list{organization}{1}{%
+        {Robomechanics Lab}%
+      }
+      \field{sortinit}{9}
+      \field{sortinithash}{0a5ebc79d83c96b6579069544c73c7d4}
+      \field{labeltitlesource}{title}
+      \field{title}{MiniRHex Image Gallery}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://robomechanics.github.io/MiniRHex/Images/
+      \endverb
+      \verb{url}
+      \verb https://robomechanics.github.io/MiniRHex/Images/
+      \endverb
+    \endentry
+    \entry{minirhexvideo}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=208c29f8709600b4341c258ec74e8dc9}{%
+           family={Lab},
+           familyi={L\bibinitperiod},
+           given={Robomechanics},
+           giveni={R\bibinitperiod}}}%
+      }
+      \strng{namehash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{fullhash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{fullhashraw}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{bibnamehash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{authorbibnamehash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{authornamehash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{authorfullhash}{208c29f8709600b4341c258ec74e8dc9}
+      \strng{authorfullhashraw}{208c29f8709600b4341c258ec74e8dc9}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Introducing MiniRHex}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2018}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://www.youtube.com/watch?v=ldLXVDNCCzc
+      \endverb
+      \verb{url}
+      \verb https://www.youtube.com/watch?v=ldLXVDNCCzc
+      \endverb
+    \endentry
+    \entry{interbotixphantomx}{online}{}{}
+      \list{organization}{1}{%
+        {Interbotix Labs}%
+      }
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeltitlesource}{title}
+      \field{title}{PhantomX Hexapod Mark III --- Multi-Legged Robotic Platform}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://www.interbotix.com/Robotic-Hexapod
+      \endverb
+      \verb{url}
+      \verb https://www.interbotix.com/Robotic-Hexapod
+      \endverb
+    \endentry
+    \entry{robotisax12a}{online}{}{}
+      \list{organization}{1}{%
+        {ROBOTIS}%
+      }
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labeltitlesource}{title}
+      \field{title}{{AX-12A} e-Manual}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://emanual.robotis.com/docs/en/dxl/ax/ax-12a/
+      \endverb
+      \verb{url}
+      \verb https://emanual.robotis.com/docs/en/dxl/ax/ax-12a/
+      \endverb
+    \endentry
+    \entry{zenta2012phantomxvideo}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=8e5b75032723f5166572067eb5eda80c}{%
+           family={Zenta},
+           familyi={Z\bibinitperiod}}}%
+      }
+      \strng{namehash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{fullhash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{fullhashraw}{8e5b75032723f5166572067eb5eda80c}
+      \strng{bibnamehash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{authorbibnamehash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{authornamehash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{authorfullhash}{8e5b75032723f5166572067eb5eda80c}
+      \strng{authorfullhashraw}{8e5b75032723f5166572067eb5eda80c}
+      \field{sortinit}{1}
+      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{PhantomX Running Phoenix Code}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2012}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://www.youtube.com/watch?v=rAeQn5QnyXo
+      \endverb
+      \verb{url}
+      \verb https://www.youtube.com/watch?v=rAeQn5QnyXo
+      \endverb
+    \endentry
     \entry{steindl2020bruce}{article}{}{}
       \name{author}{7}{}{%
         {{hash=d8467cb2f1f0d6273fd87b9dbc0e272d}{%
@@ -278,8 +399,8 @@
       \strng{authornamehash}{0ebfc25db422bad89b8248f9a6f15e8d}
       \strng{authorfullhash}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
       \strng{authorfullhashraw}{43ac4e9ad8eb2edd8e7d21ffededc6a9}
-      \field{sortinit}{1}
-      \field{sortinithash}{4f6aaa89bab872aa0999fec09ff8e98a}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
       \field{labelnamesource}{author}
       \field{labeltitlesource}{title}
       \field{journaltitle}{arXiv preprint arXiv:2011.00523}
@@ -294,6 +415,180 @@
       \endverb
       \verb{url}
       \verb https://arxiv.org/abs/2011.00523
+      \endverb
+    \endentry
+    \entry{brucevideo}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=833a6b3db8d55333eac6f36772078bf3}{%
+           family={CSIRORobotics},
+           familyi={C\bibinitperiod}}}%
+      }
+      \strng{namehash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{fullhash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{fullhashraw}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{bibnamehash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{authorbibnamehash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{authornamehash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{authorfullhash}{833a6b3db8d55333eac6f36772078bf3}
+      \strng{authorfullhashraw}{833a6b3db8d55333eac6f36772078bf3}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Bruce - Design and Development of a Dynamic Hexapod Robot}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2021}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://www.youtube.com/watch?v=CLs45hqUB0w
+      \endverb
+      \verb{url}
+      \verb https://www.youtube.com/watch?v=CLs45hqUB0w
+      \endverb
+    \endentry
+    \entry{rasic2020braccio}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=7df373f5e56ac7a81943814b9287d849}{%
+           family={Rasic},
+           familyi={R\bibinitperiod},
+           given={Milos},
+           giveni={M\bibinitperiod}}}%
+      }
+      \strng{namehash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{fullhash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{fullhashraw}{7df373f5e56ac7a81943814b9287d849}
+      \strng{bibnamehash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{authorbibnamehash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{authornamehash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{authorfullhash}{7df373f5e56ac7a81943814b9287d849}
+      \strng{authorfullhashraw}{7df373f5e56ac7a81943814b9287d849}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Sensor Kit For BRACCIO}
+      \field{urlday}{8}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2020}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://community.element14.com/challenges-projects/project14/sensors/b/blog/posts/sensor-kit-for-braccio
+      \endverb
+      \verb{url}
+      \verb https://community.element14.com/challenges-projects/project14/sensors/b/blog/posts/sensor-kit-for-braccio
+      \endverb
+    \endentry
+    \entry{openservo2018}{online}{}{}
+      \field{sortinit}{2}
+      \field{sortinithash}{8b555b3791beccb63322c22f3320aa9a}
+      \field{labeltitlesource}{title}
+      \field{title}{OpenServo 2.0}
+      \field{urlday}{8}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2018}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://hackaday.io/project/158267-openservo-20
+      \endverb
+      \verb{url}
+      \verb https://hackaday.io/project/158267-openservo-20
+      \endverb
+    \endentry
+    \entry{dtuinspectionrobot}{online}{}{}
+      \list{organization}{1}{%
+        {Rsewiki, Technical University of Denmark}%
+      }
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labeltitlesource}{title}
+      \field{title}{Inspection Robot}
+      \field{urlday}{8}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://rsewiki.electro.dtu.dk/index.php?title=Inspection_robot
+      \endverb
+      \verb{url}
+      \verb https://rsewiki.electro.dtu.dk/index.php?title=Inspection_robot
+      \endverb
+    \endentry
+    \entry{backstrom2020servoarm}{online}{}{}
+      \name{author}{1}{}{%
+        {{hash=7f0a9130de843b68edbf48da40a06b4b}{%
+           family={Bäckström},
+           familyi={B\bibinitperiod},
+           given={Adam},
+           giveni={A\bibinitperiod}}}%
+      }
+      \strng{namehash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{fullhash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{fullhashraw}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{bibnamehash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{authorbibnamehash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{authornamehash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{authorfullhash}{7f0a9130de843b68edbf48da40a06b4b}
+      \strng{authorfullhashraw}{7f0a9130de843b68edbf48da40a06b4b}
+      \field{sortinit}{3}
+      \field{sortinithash}{ad6fe7482ffbd7b9f99c9e8b5dccd3d7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Super Accurate 300€ Robot Arm}
+      \field{urlday}{8}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2020}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://www.hackster.io/adamb314/super-accurate-300-robot-arm-15f1d2
+      \endverb
+      \verb{url}
+      \verb https://www.hackster.io/adamb314/super-accurate-300-robot-arm-15f1d2
+      \endverb
+    \endentry
+    \entry{lynch2017modernrobotics}{book}{}{}
+      \name{author}{2}{}{%
+        {{hash=ab9086b1452a1a9813fc6765151b4f61}{%
+           family={Lynch},
+           familyi={L\bibinitperiod},
+           given={Kevin\bibnamedelima M.},
+           giveni={K\bibinitperiod\bibinitdelim M\bibinitperiod}}}%
+        {{hash=66f19f2d439b6eb60c024ab622b0389f}{%
+           family={Park},
+           familyi={P\bibinitperiod},
+           given={Frank\bibnamedelima C.},
+           giveni={F\bibinitperiod\bibinitdelim C\bibinitperiod}}}%
+      }
+      \list{publisher}{1}{%
+        {Cambridge University Press}%
+      }
+      \strng{namehash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{fullhash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{fullhashraw}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{bibnamehash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{authorbibnamehash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{authornamehash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{authorfullhash}{8d01efb70f6cec86f711e78e22f97a48}
+      \strng{authorfullhashraw}{8d01efb70f6cec86f711e78e22f97a48}
+      \field{sortinit}{4}
+      \field{sortinithash}{9381316451d1b9788675a07e972a12a7}
+      \field{labelnamesource}{author}
+      \field{labeltitlesource}{title}
+      \field{title}{Modern Robotics: Mechanics, Planning, and Control}
+      \field{urlday}{9}
+      \field{urlmonth}{4}
+      \field{urlyear}{2026}
+      \field{year}{2017}
+      \field{urldateera}{ce}
+      \verb{urlraw}
+      \verb https://hades.mech.northwestern.edu/images/2/25/MR-v2.pdf
+      \endverb
+      \verb{url}
+      \verb https://hades.mech.northwestern.edu/images/2/25/MR-v2.pdf
       \endverb
     \endentry
   \enddatalist
