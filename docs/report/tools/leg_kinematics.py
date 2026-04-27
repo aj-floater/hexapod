@@ -13,10 +13,10 @@ MAX_REACH_MM = sum(LINK_LENGTHS_MM)
 
 # Standard DH table from the frame sketch:
 #   d = 0 for all joints
-#   theta = theta_i
+#   theta = [theta1, theta2 - 90 deg, 20 deg - theta3]
 #   a/r = l_i
-#   alpha = [90, 0, -90] degrees
-ALPHA_DEG = (90.0, 0.0, -90.0)
+#   alpha = [-90, 180, -90] degrees
+ALPHA_DEG = (-90.0, 180.0, -90.0)
 
 SERVO_LIMITS_DEG = {
     "A": (40.0, 140.0),
@@ -38,6 +38,15 @@ class LegPose:
 DEFAULT_POSE = LegPose()
 
 
+def dh_theta_angles_deg(pose: LegPose) -> tuple[float, float, float]:
+    """Convert raw servo input angles into the DH row theta values."""
+    return (
+        pose.theta1_deg,
+        pose.theta2_deg - 90.0,
+        20.0 - pose.theta3_deg,
+    )
+
+
 def standard_dh_transform(theta_deg: float, d: float, a: float, alpha_deg: float) -> np.ndarray:
     """Return the standard DH transform Rz(theta) Tz(d) Tx(a) Rx(alpha)."""
     theta = math.radians(theta_deg)
@@ -57,8 +66,8 @@ def standard_dh_transform(theta_deg: float, d: float, a: float, alpha_deg: float
 
 
 def forward_kinematics(pose: LegPose) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """Return frame transforms and joint origins for the current pose."""
-    angles = (pose.theta1_deg, pose.theta2_deg, pose.theta3_deg)
+    """Return DH frame transforms and joint origins for a raw servo-angle pose."""
+    angles = dh_theta_angles_deg(pose)
 
     transforms = [np.eye(4)]
     transform = np.eye(4)
@@ -71,7 +80,7 @@ def forward_kinematics(pose: LegPose) -> tuple[list[np.ndarray], list[np.ndarray
 
 
 def end_effector_position(theta1_deg: float, theta2_deg: float, theta3_deg: float) -> np.ndarray:
-    """Return the final frame origin for a given set of joint angles."""
+    """Return the final frame origin for a given raw servo-angle pose."""
     _, origins = forward_kinematics(LegPose(theta1_deg, theta2_deg, theta3_deg))
     return origins[-1]
 

@@ -99,6 +99,43 @@ def sample_workspace(a_step: float, b_step: float, c_step: float) -> list[dict[s
     return rows
 
 
+def sample_workspace_section(a_angle: float, b_step: float, c_step: float) -> list[dict[str, float | str]]:
+    """Sample the fixed-A Y-Z section boundary from the workspace sweeps."""
+    b_min, b_max = SERVO_LIMITS_DEG["B"]
+    c_min, c_max = SERVO_LIMITS_DEG["C"]
+
+    rows: list[dict[str, float | str]] = []
+
+    def append_row(layer_key: str, b_angle: float, c_angle: float, line_group_deg: float) -> None:
+        x, y, z = end_effector_position(a_angle, b_angle, c_angle)
+        rows.append(
+            {
+                "x": float(x),
+                "y": float(y),
+                "z": float(z),
+                "a_deg": float(a_angle),
+                "b_deg": float(b_angle),
+                "c_deg": float(c_angle),
+                "line_group_deg": float(line_group_deg),
+                "layer": layer_key,
+            }
+        )
+
+    for b_angle in inclusive_range(b_min, b_max, b_step):
+        append_row("outer_c_min", b_angle, C_MOST_EXTENDED_DEG, line_group_deg=b_angle)
+
+    for c_angle in inclusive_range(c_min, c_max, c_step):
+        append_row("b_max_c_sweep", b_max, c_angle, line_group_deg=c_angle)
+
+    for b_angle in inclusive_range(b_min, b_max, b_step):
+        append_row("inner_c_max", b_angle, C_LEAST_EXTENDED_DEG, line_group_deg=b_angle)
+
+    for c_angle in inclusive_range(c_min, c_max, c_step):
+        append_row("b_min_c_sweep", b_min, c_angle, line_group_deg=c_angle)
+
+    return rows
+
+
 def rows_to_array(rows: list[dict[str, float | str]], layer: str) -> np.ndarray:
     points = [[row["x"], row["y"], row["z"], row["line_group_deg"]] for row in rows if row["layer"] == layer]
     return np.array(points, dtype=float)
