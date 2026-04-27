@@ -14,14 +14,11 @@ from matplotlib.colors import to_rgba
 from matplotlib.lines import Line2D
 
 from leg_kinematics import (
-    C_LEAST_EXTENDED_DEG,
-    C_MOST_EXTENDED_DEG,
     LegPose,
-    SERVO_LIMITS_DEG,
     forward_kinematics,
-    inclusive_range,
     set_fixed_workspace_axes,
 )
+from leg_workspace_plot import WORKSPACE_LAYER_SPECS, WORKSPACE_LAYER_SPECS_BY_KEY, sample_workspace
 
 
 @dataclass(frozen=True)
@@ -31,31 +28,22 @@ class WorkspaceSample:
     colour: str
 
 
-def sample_workspace_sweep(a_step: float, b_step: float) -> list[WorkspaceSample]:
-    """Return the documented A/B workspace sweep for the two C boundary layers."""
-    a_min, a_max = SERVO_LIMITS_DEG["A"]
-    b_min, b_max = SERVO_LIMITS_DEG["B"]
-
+def sample_workspace_sweep(a_step: float, b_step: float, c_step: float) -> list[WorkspaceSample]:
+    """Return the documented workspace sweep order for all sampled layer families."""
     samples: list[WorkspaceSample] = []
-    layers = (
-        ("outer sweep, C = 20 deg", C_MOST_EXTENDED_DEG, "tab:blue"),
-        ("inner sweep, C = 170 deg", C_LEAST_EXTENDED_DEG, "tab:orange"),
-    )
-
-    for layer_name, c_angle, colour in layers:
-        for b_angle in inclusive_range(b_min, b_max, b_step):
-            for a_angle in inclusive_range(a_min, a_max, a_step):
-                samples.append(
-                    WorkspaceSample(
-                        pose=LegPose(
-                            theta1_deg=float(a_angle),
-                            theta2_deg=float(b_angle),
-                            theta3_deg=float(c_angle),
-                        ),
-                        layer_name=layer_name,
-                        colour=colour,
-                    )
-                )
+    for row in sample_workspace(a_step=a_step, b_step=b_step, c_step=c_step):
+        layer = WORKSPACE_LAYER_SPECS_BY_KEY[str(row["layer"])]
+        samples.append(
+            WorkspaceSample(
+                pose=LegPose(
+                    theta1_deg=float(row["a_deg"]),
+                    theta2_deg=float(row["b_deg"]),
+                    theta3_deg=float(row["c_deg"]),
+                ),
+                layer_name=layer.label,
+                colour=layer.colour,
+            )
+        )
 
     return samples
 
@@ -130,27 +118,19 @@ def make_animation(
     )
 
     status = ax.text2D(0.02, 0.02, "", transform=ax.transAxes, fontsize=9)
-    legend_handles = [
-        Line2D([0], [0], color="black", marker="o", label="DH leg links"),
-        Line2D(
-            [0],
-            [0],
-            color="none",
-            marker="o",
-            markerfacecolor="tab:blue",
-            markeredgecolor="tab:blue",
-            label="outer, C = 20 deg",
-        ),
-        Line2D(
-            [0],
-            [0],
-            color="none",
-            marker="o",
-            markerfacecolor="tab:orange",
-            markeredgecolor="tab:orange",
-            label="inner, C = 170 deg",
-        ),
-    ]
+    legend_handles = [Line2D([0], [0], color="black", marker="o", label="DH leg links")]
+    for spec in WORKSPACE_LAYER_SPECS:
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="none",
+                marker="o",
+                markerfacecolor=spec.colour,
+                markeredgecolor=spec.colour,
+                label=spec.label,
+            )
+        )
     ax.legend(handles=legend_handles, loc="upper left")
 
     endpoints = np.array([path[-1] for path in joint_paths])
@@ -213,6 +193,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--a-step", type=float, default=5.0, help="Servo A/theta1 sampling step in degrees.")
     parser.add_argument("--b-step", type=float, default=5.0, help="Servo B/theta2 sampling step in degrees.")
+    parser.add_argument("--c-step", type=float, default=5.0, help="Servo C/theta3 sampling step in degrees.")
     parser.add_argument("--interval-ms", type=int, default=40, help="Delay between animation frames.")
     parser.add_argument("--trail-length", type=int, default=80, help="Number of recent endpoint samples to show.")
     parser.add_argument("--no-repeat", action="store_true", help="Stop the animation after one sweep.")
@@ -229,7 +210,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    samples = sample_workspace_sweep(a_step=args.a_step, b_step=args.b_step)
+    samples = sample_workspace_sweep(a_step=args.a_step, b_step=args.b_step, c_step=args.c_step)
     if not samples:
         raise RuntimeError("no workspace samples generated")
 
@@ -250,6 +231,7 @@ def main() -> None:
     if args.show:
         plt.show()
     else:
+        fig.canvas.draw()
         plt.close(fig)
 
 

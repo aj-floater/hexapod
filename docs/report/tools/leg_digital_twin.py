@@ -25,7 +25,15 @@ from devlink_dashboard.messages import (
     parse_line_resilient,
 )
 from devlink_dashboard.transport import SerialTransport, SerialUnavailableError, list_serial_ports
-from leg_kinematics import DEFAULT_POSE, LegPose, SERVO_LIMITS_DEG, forward_kinematics, set_fixed_workspace_axes
+from leg_kinematics import (
+    DEFAULT_POSE,
+    LegPose,
+    SERVO_LIMITS_DEG,
+    dh_theta_angles_deg,
+    forward_kinematics,
+    set_fixed_workspace_axes,
+)
+from leg_workspace_plot import WORKSPACE_LAYER_SPECS, sample_workspace
 
 
 DEFAULT_DEVICE = "control_testing"
@@ -34,27 +42,16 @@ DEFAULT_FIELDS = ("adc_a_lp_deg", "adc_b_lp_deg", "adc_c_lp_deg")
 DEFAULT_BAUD = 115200
 DEFAULT_TIMEOUT_S = 0.05
 FRAME_AXIS_SCALE_MM = 40.0
-SERVO_A_DH_CENTER_DEG = 90.0
-SERVO_B_DH_ZERO_DEG = 90.0
-SERVO_C_DH_ZERO_DEG = 20.0
+WORKSPACE_POINT_ALPHA = 0.12
+WORKSPACE_POINT_SIZE = 9.0
 
 
 @dataclass(frozen=True)
 class MeasuredAngleSample:
     raw_pose: LegPose
-    model_pose: LegPose
     seq: int
     t_us: int
     received_at: float
-
-
-def servo_angles_to_dh_pose(a_deg: float, b_deg: float, c_deg: float) -> LegPose:
-    """Map physical servo telemetry into the DH angle convention used by the model."""
-    return LegPose(
-        theta1_deg=(2.0 * SERVO_A_DH_CENTER_DEG) - a_deg,
-        theta2_deg=b_deg - SERVO_B_DH_ZERO_DEG,
-        theta3_deg=c_deg - SERVO_C_DH_ZERO_DEG,
-    )
 
 
 def resolve_serial_port(requested_port: str | None) -> str:
@@ -94,10 +91,8 @@ def extract_measured_angle_sample(
         raise ValueError(f"{stream} angle fields must be numeric") from exc
 
     raw_pose = LegPose(theta1_deg=a_deg, theta2_deg=b_deg, theta3_deg=c_deg)
-    model_pose = servo_angles_to_dh_pose(a_deg, b_deg, c_deg)
     return MeasuredAngleSample(
         raw_pose=raw_pose,
-        model_pose=model_pose,
         seq=message.seq,
         t_us=message.t_us,
         received_at=time.monotonic() if received_at is None else received_at,
@@ -116,6 +111,19 @@ def servo_limit_warnings(raw_pose: LegPose) -> list[str]:
         if value < lower or value > upper:
             warnings.append(f"{name}={value:.1f} outside {lower:.0f}-{upper:.0f} deg")
     return warnings
+
+
+def workspace_point_cloud_layers() -> list[tuple[str, str, np.ndarray]]:
+    """Return the sampled workspace point clouds as per-layer XYZ arrays."""
+    rows = sample_workspace(a_step=5.0, b_step=5.0, c_step=5.0)
+    layers: list[tuple[str, str, np.ndarray]] = []
+    for spec in WORKSPACE_LAYER_SPECS:
+        points = np.array(
+            [[row["x"], row["y"], row["z"]] for row in rows if row["layer"] == spec.key],
+            dtype=float,
+        ).reshape(-1, 3)
+        layers.append((spec.label, spec.colour, points))
+    return layers
 
 
 class DevlinkReader:
@@ -210,11 +218,25 @@ class DigitalTwinPlot:
         self._latest_status = "waiting for telemetry"
         self._latest_warning = ""
         self._trail_points: list[np.ndarray] = []
+        self._workspace_scatters: list[object] = []
         self._frame_artists: list[object] = []
 
         self.fig = plt.figure(figsize=(9, 8))
         self.ax = self.fig.add_subplot(111, projection="3d")
         self._build_axes()
+
+        for label, colour, points in workspace_point_cloud_layers():
+            scatter = self.ax.scatter(
+                points[:, 0],
+                points[:, 1],
+                points[:, 2],
+                s=WORKSPACE_POINT_SIZE,
+                color=colour,
+                alpha=WORKSPACE_POINT_ALPHA,
+                depthshade=False,
+                label=label,
+            )
+            self._workspace_scatters.append(scatter)
 
         _initial_transforms, initial_path = self._leg_geometry(DEFAULT_POSE)
         (self._leg_line,) = self.ax.plot(
@@ -295,9 +317,10 @@ class DigitalTwinPlot:
         self._drain_statuses()
         self._drain_messages()
 
-        pose = DEFAULT_POSE if self._latest_sample is None else self._latest_sample.model_pose
+        pose = DEFAULT_POSE if self._latest_sample is None else self._latest_sample.raw_pose
         self._refresh_artists(pose)
         return (
+            *self._workspace_scatters,
             self._leg_line,
             self._joint_scatter,
             self._foot_scatter,
@@ -349,7 +372,7 @@ class DigitalTwinPlot:
             return
 
         self._latest_sample = sample
-        _transforms, path = self._leg_geometry(sample.model_pose)
+        _transforms, path = self._leg_geometry(sample.raw_pose)
         self._trail_points.append(path[-1])
         while len(self._trail_points) > self._trail_length:
             self._trail_points.pop(0)
@@ -384,15 +407,16 @@ class DigitalTwinPlot:
             age_line = "no measured sample received"
         else:
             age_s = max(0.0, time.monotonic() - sample.received_at)
+            dh_theta1_deg, dh_theta2_deg, dh_theta3_deg = dh_theta_angles_deg(sample.raw_pose)
             raw_angle_line = (
                 f"servo raw: A={sample.raw_pose.theta1_deg:.1f} deg, "
                 f"B={sample.raw_pose.theta2_deg:.1f} deg, "
                 f"C={sample.raw_pose.theta3_deg:.1f} deg"
             )
             model_angle_line = (
-                f"DH model: theta1={sample.model_pose.theta1_deg:.1f} deg, "
-                f"theta2={sample.model_pose.theta2_deg:.1f} deg, "
-                f"theta3={sample.model_pose.theta3_deg:.1f} deg"
+                f"DH model: theta1={dh_theta1_deg:.1f} deg, "
+                f"theta2={dh_theta2_deg:.1f} deg, "
+                f"theta3={dh_theta3_deg:.1f} deg"
             )
             age_line = f"seq={sample.seq}, device t={sample.t_us / 1_000_000.0:.3f} s, age={age_s:.2f} s"
 
