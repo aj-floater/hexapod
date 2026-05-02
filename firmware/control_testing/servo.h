@@ -33,6 +33,11 @@ typedef struct {
     uint motor_in1_gpio;
     uint motor_in2_gpio;
     uint8_t default_control_mode;
+    float default_hold_p_gain;
+    float default_hold_i_gain;
+    float default_hold_d_gain;
+    float min_angle_deg;
+    float max_angle_deg;
     const ServoCalibrationPoint *calibration_points;
     size_t calibration_point_count;
 } ServoConfig;
@@ -63,10 +68,17 @@ typedef struct {
     AdcInput adc;
     MotorPwm motor;
     bool adc_lp_ready;
+    bool boundary_override_active;
+    bool boundary_override_low_side;
     uint8_t control_mode;
+    uint8_t manual_motor_state;
+    uint8_t manual_motor_drive_pct;
     ServoSettings settings;
     ServoTelemetry telemetry;
     PositionHoldState hold_state;
+    PositionHoldState boundary_hold_state;
+    float min_angle_deg;
+    float max_angle_deg;
     const ServoCalibrationPoint *calibration_points;
     size_t calibration_point_count;
 } Servo;
@@ -79,5 +91,6 @@ void servo_tick(Servo *servo);
 void servo_set_control_mode(Servo *servo, uint8_t mode);
 void servo_set_motor_state(Servo *servo, uint8_t state);
 void servo_set_motor_drive_pct(Servo *servo, uint8_t pct);
+float servo_clamp_target_deg(const Servo *servo, float target_deg);
 
 #endif

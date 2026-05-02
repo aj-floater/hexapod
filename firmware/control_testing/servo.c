@@ -6,6 +6,7 @@
 #define SERVO_ADC_RAW_MIN 0u
 #define SERVO_ADC_RAW_MAX 4080u
 #define SERVO_MOTOR_PWM_HZ 20000u
+#define SERVO_BOUNDARY_RELEASE_MARGIN_DEG 1.0f
 
 // Clamps raw ADC values to the usable range.
 static uint16_t servo_bound_adc_raw(uint16_t raw_value) {
@@ -21,6 +22,19 @@ static uint16_t servo_bound_adc_raw(uint16_t raw_value) {
 // Converts tenths of degrees to float degrees.
 static float servo_deg_tenths_to_f32(int16_t deg_tenths) {
     return (float)deg_tenths / (float)SERVO_TENTHS_PER_DEG;
+}
+
+// Clamps one target angle to the configured servo-safe range.
+float servo_clamp_target_deg(const Servo *servo, float target_deg) {
+    hard_assert(servo != NULL);
+
+    if (target_deg < servo->min_angle_deg) {
+        return servo->min_angle_deg;
+    }
+    if (target_deg > servo->max_angle_deg) {
+        return servo->max_angle_deg;
+    }
+    return target_deg;
 }
 
 // Divides with nearest-integer rounding for positive and negative numerators.
@@ -125,6 +139,83 @@ static uint16_t servo_update_adc_lp(Servo *servo, uint16_t avg_raw_value) {
     return servo->telemetry.adc_lp_raw;
 }
 
+// Returns the low-side recovery target just inside the legal range.
+static float servo_boundary_low_target_deg(const Servo *servo) {
+    float target_deg = 0.0f;
+
+    hard_assert(servo != NULL);
+
+    target_deg = servo->min_angle_deg + SERVO_BOUNDARY_RELEASE_MARGIN_DEG;
+    if (target_deg > servo->max_angle_deg) {
+        target_deg = servo->max_angle_deg;
+    }
+    return target_deg;
+}
+
+// Returns the high-side recovery target just inside the legal range.
+static float servo_boundary_high_target_deg(const Servo *servo) {
+    float target_deg = 0.0f;
+
+    hard_assert(servo != NULL);
+
+    target_deg = servo->max_angle_deg - SERVO_BOUNDARY_RELEASE_MARGIN_DEG;
+    if (target_deg < servo->min_angle_deg) {
+        target_deg = servo->min_angle_deg;
+    }
+    return target_deg;
+}
+
+// Checks whether the servo should start or continue a boundary override.
+static bool servo_boundary_override_needed(
+    Servo *servo,
+    float measured_deg,
+    float *out_target_deg
+) {
+    hard_assert(servo != NULL);
+    hard_assert(out_target_deg != NULL);
+
+    if (servo->boundary_override_active) {
+        if (servo->boundary_override_low_side) {
+            *out_target_deg = servo_boundary_low_target_deg(servo);
+            if (measured_deg >= *out_target_deg) {
+                servo->boundary_override_active = false;
+                servo->hold_state = (PositionHoldState){0};
+                servo->boundary_hold_state = (PositionHoldState){0};
+                return false;
+            }
+            return true;
+        }
+
+        *out_target_deg = servo_boundary_high_target_deg(servo);
+        if (measured_deg <= *out_target_deg) {
+            servo->boundary_override_active = false;
+            servo->hold_state = (PositionHoldState){0};
+            servo->boundary_hold_state = (PositionHoldState){0};
+            return false;
+        }
+        return true;
+    }
+
+    if (measured_deg < servo->min_angle_deg) {
+        servo->boundary_override_active = true;
+        servo->boundary_override_low_side = true;
+        servo->hold_state = (PositionHoldState){0};
+        servo->boundary_hold_state = (PositionHoldState){0};
+        *out_target_deg = servo_boundary_low_target_deg(servo);
+        return true;
+    }
+    if (measured_deg > servo->max_angle_deg) {
+        servo->boundary_override_active = true;
+        servo->boundary_override_low_side = false;
+        servo->hold_state = (PositionHoldState){0};
+        servo->boundary_hold_state = (PositionHoldState){0};
+        *out_target_deg = servo_boundary_high_target_deg(servo);
+        return true;
+    }
+
+    return false;
+}
+
 // Applies the cached motor command.
 static void servo_apply_output(Servo *servo) {
     hard_assert(servo != NULL);
@@ -155,6 +246,8 @@ void servo_init(
     hard_assert(config != NULL);
 
     servo->id = config->id;
+    servo->min_angle_deg = config->min_angle_deg;
+    servo->max_angle_deg = config->max_angle_deg;
     servo->calibration_points = config->calibration_points;
     servo->calibration_point_count = config->calibration_point_count;
 
@@ -168,13 +261,17 @@ void servo_init(
     );
 
     servo->adc_lp_ready = false;
+    servo->boundary_override_active = false;
+    servo->boundary_override_low_side = false;
     servo->control_mode = config->default_control_mode;
+    servo->manual_motor_state = SERVO_MOTOR_STATE_COAST;
+    servo->manual_motor_drive_pct = 0u;
     servo->settings.filter_alpha_pct = SERVO_FILTER_ALPHA_DEFAULT_PCT;
-    servo->settings.hold_target_deg = HOLD_TARGET_DEFAULT;
+    servo->settings.hold_target_deg = servo_clamp_target_deg(servo, HOLD_TARGET_DEFAULT);
     servo->settings.hold_deadband_deg = HOLD_DEADBAND_DEFAULT;
-    servo->settings.hold_p_gain = HOLD_P_GAIN_DEFAULT;
-    servo->settings.hold_i_gain = HOLD_I_GAIN_DEFAULT;
-    servo->settings.hold_d_gain = HOLD_D_GAIN_DEFAULT;
+    servo->settings.hold_p_gain = config->default_hold_p_gain;
+    servo->settings.hold_i_gain = config->default_hold_i_gain;
+    servo->settings.hold_d_gain = config->default_hold_d_gain;
     servo->settings.hold_max_duty = HOLD_MAX_DUTY_DEFAULT;
     servo->telemetry = (ServoTelemetry){
         .motor_state = SERVO_MOTOR_STATE_COAST,
@@ -182,6 +279,7 @@ void servo_init(
         .hold_output_pct = 0,
     };
     servo->hold_state = (PositionHoldState){0};
+    servo->boundary_hold_state = (PositionHoldState){0};
 
     servo_apply_output(servo);
 }
@@ -191,11 +289,14 @@ void servo_set_control_mode(Servo *servo, uint8_t mode) {
     hard_assert(servo != NULL);
 
     servo->control_mode = mode;
+    servo->boundary_override_active = false;
+    servo->boundary_hold_state = (PositionHoldState){0};
     if (servo->control_mode == CONTROL_MODE_MANUAL) {
-        servo->telemetry.motor_state = SERVO_MOTOR_STATE_COAST;
-        servo->telemetry.motor_drive_pct = 0u;
+        servo->manual_motor_state = SERVO_MOTOR_STATE_COAST;
+        servo->manual_motor_drive_pct = 0u;
+        servo->telemetry.motor_state = servo->manual_motor_state;
+        servo->telemetry.motor_drive_pct = servo->manual_motor_drive_pct;
         servo->telemetry.hold_output_pct = 0;
-        servo_apply_output(servo);
     } else if (servo->control_mode == CONTROL_MODE_HOLD) {
         servo->hold_state = (PositionHoldState){0};
     }
@@ -205,20 +306,21 @@ void servo_set_control_mode(Servo *servo, uint8_t mode) {
 void servo_set_motor_state(Servo *servo, uint8_t state) {
     hard_assert(servo != NULL);
 
-    servo->telemetry.motor_state = state;
-    servo_apply_output(servo);
+    servo->manual_motor_state = state;
 }
 
 // Updates the manual motor duty.
 void servo_set_motor_drive_pct(Servo *servo, uint8_t pct) {
     hard_assert(servo != NULL);
 
-    servo->telemetry.motor_drive_pct = pct;
-    servo_apply_output(servo);
+    servo->manual_motor_drive_pct = pct;
 }
 
 // Runs one servo control cycle.
 void servo_tick(Servo *servo) {
+    float measured_deg = 0.0f;
+    float boundary_target_deg = 0.0f;
+
     hard_assert(servo != NULL);
 
     servo->telemetry.adc_raw = servo_bound_adc_raw(adc_input_read_raw(&servo->adc));
@@ -234,11 +336,26 @@ void servo_tick(Servo *servo) {
         servo,
         servo->telemetry.adc_lp_raw
     );
+    measured_deg = servo_deg_tenths_to_f32(servo->telemetry.angle_lp_deg_tenths);
 
-    if (servo->control_mode == CONTROL_MODE_HOLD) {
+    if (servo_boundary_override_needed(servo, measured_deg, &boundary_target_deg)) {
+        PositionHoldResult boundary_result = position_hold_update(
+            boundary_target_deg,
+            measured_deg,
+            0.0f,
+            servo->settings.hold_p_gain,
+            servo->settings.hold_i_gain,
+            servo->settings.hold_d_gain,
+            servo->settings.hold_max_duty,
+            &servo->boundary_hold_state
+        );
+        servo->telemetry.motor_state = boundary_result.motor_state;
+        servo->telemetry.motor_drive_pct = boundary_result.motor_drive_pct;
+        servo->telemetry.hold_output_pct = boundary_result.output_pct;
+    } else if (servo->control_mode == CONTROL_MODE_HOLD) {
         PositionHoldResult hold_result = position_hold_update(
-            servo->settings.hold_target_deg,
-            servo_deg_tenths_to_f32(servo->telemetry.angle_lp_deg_tenths),
+            servo_clamp_target_deg(servo, servo->settings.hold_target_deg),
+            measured_deg,
             servo->settings.hold_deadband_deg,
             servo->settings.hold_p_gain,
             servo->settings.hold_i_gain,
@@ -249,8 +366,11 @@ void servo_tick(Servo *servo) {
         servo->telemetry.motor_state = hold_result.motor_state;
         servo->telemetry.motor_drive_pct = hold_result.motor_drive_pct;
         servo->telemetry.hold_output_pct = hold_result.output_pct;
-        servo_apply_output(servo);
     } else {
+        servo->telemetry.motor_state = servo->manual_motor_state;
+        servo->telemetry.motor_drive_pct = servo->manual_motor_drive_pct;
         servo->telemetry.hold_output_pct = 0;
     }
+
+    servo_apply_output(servo);
 }

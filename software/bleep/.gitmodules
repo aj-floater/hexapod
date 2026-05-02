@@ -1,0 +1,21 @@
+[submodule "assimp"]
+	path = assimp
+	url = https://github.com/assimp/assimp.git
+[submodule "corrade"]
+	path = corrade
+	url = https://github.com/mosra/corrade.git
+[submodule "imgui"]
+	path = imgui
+	url = https://github.com/ocornut/imgui.git
+[submodule "magnum"]
+	path = magnum
+	url = https://github.com/mosra/magnum.git
+[submodule "magnum-integration"]
+	path = magnum-integration
+	url = https://github.com/mosra/magnum-integration.git
+[submodule "magnum-plugins"]
+	path = magnum-plugins
+	url = https://github.com/mosra/magnum-plugins.git
+[submodule "SDL"]
+	path = SDL
+	url = https://github.com/libsdl-org/SDL.git

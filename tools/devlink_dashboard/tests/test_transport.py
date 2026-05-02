@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest import mock
 
@@ -186,6 +188,46 @@ class TransportTests(unittest.TestCase):
 
         self.assertEqual(worker._transport.sent, ["param.set"])  # type: ignore[union-attr]
         self.assertEqual(len(messages), 1)
+
+    def test_connection_worker_can_toggle_recording_without_reconnecting(self) -> None:
+        worker = ConnectionWorker(ConnectionConfig(port="/dev/null"))
+        worker._transport = object()  # type: ignore[assignment]
+
+        states: list[tuple[bool, str]] = []
+        worker.recording_state_changed.connect(lambda active, path: states.append((active, path)))
+
+        with TemporaryDirectory() as tmpdir:
+            record_path = Path(tmpdir) / "session.jsonl"
+            worker.start_recording(str(record_path))
+            worker._handle_line(
+                '{"type":"hello","version":1,"device":"status_led","protocol":"devlink","firmware":"test"}'
+            )
+            worker.stop_recording()
+
+            self.assertTrue(record_path.exists())
+            lines = record_path.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            self.assertIn('"type":"hello"', lines[0])
+
+        self.assertEqual(states, [(True, str(record_path)), (False, "")])
+
+    def test_controller_reports_last_record_path_when_recording_stops(self) -> None:
+        from devlink_dashboard.gui.controller import GuiController
+
+        controller = GuiController()
+        messages: list[str] = []
+        controller.status_message.connect(messages.append)
+
+        controller._on_recording_state_changed(True, "/tmp/devlink/session.jsonl")
+        controller._on_recording_state_changed(False, "")
+
+        self.assertEqual(
+            messages,
+            [
+                "recording to /tmp/devlink/session.jsonl",
+                "recording stopped: saved to /tmp/devlink/session.jsonl",
+            ],
+        )
 
 
 if __name__ == "__main__":

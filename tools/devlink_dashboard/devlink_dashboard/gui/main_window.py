@@ -398,6 +398,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self._controller = controller
         self._initial_timeout = initial_timeout
+        self._last_record_path: str | None = None
         self._selected_device: str | None = None
         self._selected_stream: str | None = None
         self._workspace: PlotWorkspace | None = None
@@ -457,6 +458,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if initial_record_path is not None:
             self._record_checkbox.setChecked(True)
             self._record_path_edit.setText(initial_record_path)
+        else:
+            self._record_path_edit.setText(str(self._record_output_directory()))
 
         self._controller.refresh_ports()
         if initial_port is not None:
@@ -968,7 +971,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._baud_combo.addItem(str(baud), baud)
         toolbar.addWidget(self._baud_combo)
 
-        self._record_checkbox = QtWidgets.QCheckBox("Record")
+        self._record_checkbox = QtWidgets.QCheckBox("Auto Record")
         toolbar.addWidget(self._record_checkbox)
 
         self._record_path_edit = QtWidgets.QLineEdit()
@@ -983,6 +986,16 @@ class MainWindow(QtWidgets.QMainWindow):
             tooltip="Choose session log file",
         )
         toolbar.addWidget(self._browse_button)
+
+        self._record_toggle_button = QtWidgets.QPushButton("Start Recording")
+        self._configure_button(
+            self._record_toggle_button,
+            icon=QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton,
+            text="Start Recording",
+            tooltip="Start or stop JSONL recording without disconnecting",
+        )
+        self._record_toggle_button.setEnabled(False)
+        toolbar.addWidget(self._record_toggle_button)
 
         self._connect_button = QtWidgets.QPushButton("Connect")
         self._configure_button(
@@ -1245,6 +1258,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _connect_signals(self) -> None:
         self._refresh_ports_button.clicked.connect(self._controller.refresh_ports)
         self._browse_button.clicked.connect(self._choose_record_path)
+        self._record_toggle_button.clicked.connect(self._toggle_recording)
         self._connect_button.clicked.connect(self._toggle_connection)
         self._device_list.currentTextChanged.connect(self._on_device_selected)
         self._stream_list.currentTextChanged.connect(self._on_stream_selected)
@@ -1267,6 +1281,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._controller.ports_changed.connect(self._refresh_port_combo)
         self._controller.session_reset.connect(self._on_session_reset)
         self._controller.connection_state_changed.connect(self._on_connection_state_changed)
+        self._controller.recording_state_changed.connect(self._on_recording_state_changed)
         self._controller.discovery_state_changed.connect(self._on_discovery_state_changed)
         self._controller.status_message.connect(self._show_status)
         self._controller.raw_line_received.connect(self._append_raw_line)
@@ -1439,6 +1454,24 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         )
 
+    def _toggle_recording(self) -> None:
+        if not self._controller.is_connected:
+            self._show_status("connect to a serial device before recording", error=True)
+            return
+
+        if self._controller.is_recording:
+            self._controller.stop_recording()
+            return
+
+        port = self._selected_port()
+        if not port:
+            self._show_status("serial port is unavailable for recording", error=True)
+            return
+
+        record_directory = self._record_output_directory()
+        record_path = self._build_record_output_path(str(record_directory), port)
+        self._controller.start_recording(record_path)
+
     def _on_session_reset(self) -> None:
         self._live_refresh_timer.stop()
         self._plot_refresh_pending = False
@@ -1517,14 +1550,50 @@ class MainWindow(QtWidgets.QMainWindow):
         self._port_combo.setEnabled(not connected)
         self._baud_combo.setEnabled(not connected)
         self._refresh_ports_button.setEnabled(not connected)
-        self._record_checkbox.setEnabled(not connected)
-        self._record_path_edit.setEnabled(not connected)
-        self._browse_button.setEnabled(not connected)
         self._add_pane_button.setEnabled(connected)
         self._duplicate_pane_button.setEnabled(connected)
         self._remove_pane_button.setEnabled(connected)
         self._add_trace_button.setEnabled(connected)
+        self._refresh_record_controls()
         self._refresh_discovery_views()
+
+    def _on_recording_state_changed(self, _recording: bool, _record_path: str) -> None:
+        if _record_path:
+            self._last_record_path = _record_path
+            self._record_path_edit.setText(str(Path(_record_path).parent))
+        self._refresh_record_controls()
+
+    def _refresh_record_controls(self) -> None:
+        connected = self._controller.is_connected
+        recording = self._controller.is_recording
+        record_path = self._controller.recording_path
+
+        self._record_checkbox.setEnabled(not connected)
+        path_editable = (not connected) or (connected and not recording)
+        self._record_path_edit.setEnabled(path_editable)
+        self._browse_button.setEnabled(path_editable)
+        self._record_toggle_button.setEnabled(connected)
+
+        if recording:
+            tooltip = "Stop recording"
+            if record_path:
+                tooltip = f"Stop recording to {record_path}"
+            self._configure_button(
+                self._record_toggle_button,
+                icon=QtWidgets.QStyle.StandardPixmap.SP_BrowserStop,
+                text="Stop Recording",
+                tooltip=tooltip,
+            )
+        else:
+            tooltip = "Start JSONL recording without reconnecting"
+            if self._last_record_path:
+                tooltip = f"Start JSONL recording without reconnecting. Last file: {self._last_record_path}"
+            self._configure_button(
+                self._record_toggle_button,
+                icon=QtWidgets.QStyle.StandardPixmap.SP_DialogSaveButton,
+                text="Start Recording",
+                tooltip=tooltip,
+            )
 
     def _on_discovery_state_changed(self, _state: str) -> None:
         self._refresh_discovery_views()

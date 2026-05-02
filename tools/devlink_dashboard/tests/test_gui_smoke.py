@@ -124,6 +124,110 @@ class GuiSmokeTests(unittest.TestCase):
         if owns_app:
             app.quit()
 
+    def test_record_path_edit_defaults_to_resolved_directory(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        window = MainWindow(controller)
+
+        self.assertEqual(window._record_path_edit.text(), str(Path.cwd() / "firmware" / "recordings"))
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_record_controls_stay_available_when_connected_but_idle(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        controller._worker = object()  # type: ignore[assignment]
+        window = MainWindow(controller)
+        window._on_connection_state_changed(True)
+
+        self.assertFalse(window._record_checkbox.isEnabled())
+        self.assertTrue(window._record_path_edit.isEnabled())
+        self.assertTrue(window._browse_button.isEnabled())
+        self.assertTrue(window._record_toggle_button.isEnabled())
+        self.assertEqual(window._record_toggle_button.text(), "Start Recording")
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_record_controls_remember_last_output_path_after_stop(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        controller._worker = object()  # type: ignore[assignment]
+        window = MainWindow(controller)
+        window._on_connection_state_changed(True)
+        controller._on_recording_state_changed(True, "/tmp/devlink/session.jsonl")
+        controller._on_recording_state_changed(False, "")
+
+        self.assertEqual(window._record_path_edit.text(), "/tmp/devlink")
+        self.assertEqual(window._record_toggle_button.text(), "Start Recording")
+        self.assertIn("/tmp/devlink/session.jsonl", window._record_toggle_button.toolTip())
+        window.close()
+
+        if owns_app:
+            app.quit()
+    def test_record_controls_lock_while_recording(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        controller._worker = object()  # type: ignore[assignment]
+        window = MainWindow(controller)
+        window._on_connection_state_changed(True)
+        controller._on_recording_state_changed(True, "/tmp/devlink/session.jsonl")
+
+        self.assertFalse(window._record_path_edit.isEnabled())
+        self.assertFalse(window._browse_button.isEnabled())
+        self.assertTrue(window._record_toggle_button.isEnabled())
+        self.assertEqual(window._record_toggle_button.text(), "Stop Recording")
+        self.assertIn("/tmp/devlink/session.jsonl", window._record_toggle_button.toolTip())
+        window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_toggle_recording_builds_a_new_output_path(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        controller = GuiController()
+        controller._worker = object()  # type: ignore[assignment]
+        window = MainWindow(controller)
+        window._on_connection_state_changed(True)
+        window._port_combo.setEditText("/dev/ttyACM0")
+        window._record_path_edit.setText("/tmp/devlink-recordings")
+
+        started_paths: list[str] = []
+        controller.start_recording = started_paths.append  # type: ignore[method-assign]
+        window._toggle_recording()
+
+        self.assertEqual(len(started_paths), 1)
+        record_path = Path(started_paths[0])
+        self.assertEqual(record_path.parent, Path("/tmp/devlink-recordings"))
+        self.assertRegex(record_path.name, r"^devlink-ttyACM0-\d{8}-\d{6}\.jsonl$")
+        window.close()
+
+        if owns_app:
+            app.quit()
+
     def test_controller_retries_device_describe_until_ready(self) -> None:
         app = QtWidgets.QApplication.instance()
         owns_app = app is None
@@ -1876,6 +1980,65 @@ class GuiSmokeTests(unittest.TestCase):
             self.assertFalse(bool(popup._list.item(1).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled))
             self.assertTrue(bool(popup._list.item(0).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled))
             self.assertTrue(bool(popup._list.item(2).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled))
+            window.close()
+
+        if owns_app:
+            app.quit()
+
+    def test_gait_speed_mode_param_can_be_added_and_applied(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        owns_app = app is None
+        if app is None:
+            app = QtWidgets.QApplication(["devlink-dashboard-test"])
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            controller = GuiController()
+            sent: list[tuple[str, str, dict[str, object]]] = []
+
+            def fake_send_command(*, device: str, name: str, args: dict[str, object] | None = None):
+                sent.append((device, name, args or {}))
+                return 41
+
+            controller.send_command = fake_send_command  # type: ignore[method-assign]
+            window = MainWindow(controller)
+            window._workspace_store = WorkspaceStore(Path(tmp_dir))
+
+            capabilities = parse_line(
+                '{"type":"capabilities","version":1,"device":"control_testing",'
+                '"commands":[{"name":"gait.play","args":[]},{"name":"gait.pause","args":[]},{"name":"gait.status","args":[]}],'
+                '"streams":[],'
+                '"params":['
+                '{"name":"gait.speed_mode","type":"u8","access":"rw","default":0,"min":0,"max":3}'
+                ']}'
+            )
+            controller.runtime.apply_message(capabilities)
+            window._on_message_received(capabilities)
+
+            popup = window._build_add_param_picker()
+            self.assertIsNotNone(popup)
+            assert popup is not None
+            self.assertEqual([popup._list.item(index).text() for index in range(popup._list.count())], ["gait.speed_mode"])
+
+            popup._on_item_clicked(popup._list.item(0))
+            self.assertEqual(list(window._param_cards.keys()), ["gait.speed_mode"])
+            self.assertEqual([command.name for command in window._current_command_specs], ["gait.play", "gait.pause", "gait.status"])
+
+            editor_kind, editor = window._param_editors["gait.speed_mode"]
+            self.assertEqual(editor_kind, "int_spin")
+            self.assertEqual(editor.minimum(), 0)
+            self.assertEqual(editor.maximum(), 3)
+
+            editor.setValue(3)
+            window._on_param_edited("gait.speed_mode")
+            self.assertTrue(window._param_apply_buttons["gait.speed_mode"].isEnabled())
+
+            window._apply_param("gait.speed_mode")
+
+            self.assertEqual(
+                sent,
+                [("control_testing", "param.set", {"param": "gait.speed_mode", "value": 3})],
+            )
+            self.assertEqual(window._param_apply_buttons["gait.speed_mode"].text(), "Applying...")
             window.close()
 
         if owns_app:

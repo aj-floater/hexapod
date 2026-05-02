@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+os.environ.setdefault("PYQTGRAPH_QT_LIB", "PySide6")
+
+from PySide6 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 from pyqtgraph.exporters import ImageExporter
-from PySide6 import QtCore, QtGui, QtWidgets
 
 from .workspace import DEFAULT_X_GROUP, PlotPane, PlotTrace, PlotWorkspace, default_trace_color
 

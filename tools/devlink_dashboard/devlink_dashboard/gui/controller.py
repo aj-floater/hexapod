@@ -38,6 +38,7 @@ class ConnectionConfig:
 class ConnectionWorker(QtCore.QObject):
     connected = QtCore.Signal()
     disconnected = QtCore.Signal()
+    recording_state_changed = QtCore.Signal(bool, str)
     raw_line_received = QtCore.Signal(str)
     message_received = QtCore.Signal(object)
     parse_error_received = QtCore.Signal(str, str)
@@ -48,6 +49,7 @@ class ConnectionWorker(QtCore.QObject):
         self._config = config
         self._transport: SerialTransport | None = None
         self._recorder: JsonlRecorder | None = None
+        self._record_path: str | None = None
         self._timer: QtCore.QTimer | None = None
         self._outbox_timer: QtCore.QTimer | None = None
         self._outbox: list[CmdMessage] = []
@@ -75,13 +77,14 @@ class ConnectionWorker(QtCore.QObject):
                 timeout=self._config.timeout,
             )
             self._transport.open()
-            if self._config.record_path:
-                self._recorder = JsonlRecorder(self._config.record_path)
         except Exception as exc:
             self.connection_error.emit(str(exc))
             self._close()
             self.disconnected.emit()
             return
+
+        if self._config.record_path:
+            self._start_recording(self._config.record_path)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(max(10, int(self._config.timeout * 1000)))
@@ -97,6 +100,17 @@ class ConnectionWorker(QtCore.QObject):
         self._stopping = True
         self._close()
         self.disconnected.emit()
+
+    @QtCore.Slot(str)
+    def start_recording(self, record_path: str) -> None:
+        if self._transport is None:
+            self.connection_error.emit("transport is not open")
+            return
+        self._start_recording(record_path)
+
+    @QtCore.Slot()
+    def stop_recording(self) -> None:
+        self._stop_recording()
 
     @QtCore.Slot(object)
     def send_message(self, message: object) -> None:
@@ -183,9 +197,7 @@ class ConnectionWorker(QtCore.QObject):
             self._outbox_timer.deleteLater()
             self._outbox_timer = None
         self._outbox = []
-        if self._recorder is not None:
-            self._recorder.close()
-            self._recorder = None
+        self._stop_recording()
         if self._transport is not None:
             self._transport.close()
             self._transport = None
@@ -216,11 +228,31 @@ class ConnectionWorker(QtCore.QObject):
         elif self._outbox_timer is not None:
             self._outbox_timer.stop()
 
+    def _start_recording(self, record_path: str) -> None:
+        if self._recorder is not None:
+            return
+        try:
+            self._recorder = JsonlRecorder(record_path)
+        except Exception as exc:
+            self.connection_error.emit(str(exc))
+            return
+        self._record_path = record_path
+        self.recording_state_changed.emit(True, record_path)
+
+    def _stop_recording(self) -> None:
+        if self._recorder is None:
+            return
+        self._recorder.close()
+        self._recorder = None
+        self._record_path = None
+        self.recording_state_changed.emit(False, "")
+
 
 class GuiController(QtCore.QObject):
     ports_changed = QtCore.Signal()
     session_reset = QtCore.Signal()
     connection_state_changed = QtCore.Signal(bool)
+    recording_state_changed = QtCore.Signal(bool, str)
     discovery_state_changed = QtCore.Signal(str)
     status_message = QtCore.Signal(str)
     raw_line_received = QtCore.Signal(str)
@@ -229,6 +261,8 @@ class GuiController(QtCore.QObject):
 
     _send_message_requested = QtCore.Signal(object)
     _stop_requested = QtCore.Signal()
+    _start_recording_requested = QtCore.Signal(str)
+    _stop_recording_requested = QtCore.Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -237,6 +271,8 @@ class GuiController(QtCore.QObject):
         self._thread: QtCore.QThread | None = None
         self._worker: ConnectionWorker | None = None
         self._current_config: ConnectionConfig | None = None
+        self._recording_active = False
+        self._recording_path: str | None = None
         self._discovery_state = "idle"
         self._discovery_command_id: int | None = None
         self._discovery_timer = QtCore.QTimer(self)
@@ -254,6 +290,14 @@ class GuiController(QtCore.QObject):
     @property
     def discovery_state(self) -> str:
         return self._discovery_state
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording_active
+
+    @property
+    def recording_path(self) -> str | None:
+        return self._recording_path
 
     def port_infos(self) -> list[SerialPortInfo]:
         return list(self._ports)
@@ -278,8 +322,11 @@ class GuiController(QtCore.QObject):
         thread.started.connect(worker.start)
         self._send_message_requested.connect(worker.send_message)
         self._stop_requested.connect(worker.stop)
+        self._start_recording_requested.connect(worker.start_recording)
+        self._stop_recording_requested.connect(worker.stop_recording)
         worker.connected.connect(self._on_connected)
         worker.disconnected.connect(self._on_disconnected)
+        worker.recording_state_changed.connect(self._on_recording_state_changed)
         worker.raw_line_received.connect(self._on_raw_line)
         worker.parse_error_received.connect(self._on_parse_error)
         worker.message_received.connect(self._on_message)
@@ -295,6 +342,18 @@ class GuiController(QtCore.QObject):
         if self._worker is None:
             return
         self._stop_requested.emit()
+
+    def start_recording(self, record_path: str) -> None:
+        if self._worker is None:
+            self.status_message.emit("not connected")
+            return
+        self._start_recording_requested.emit(record_path)
+
+    def stop_recording(self) -> None:
+        if self._worker is None:
+            self.status_message.emit("not connected")
+            return
+        self._stop_recording_requested.emit()
 
     def send_command(self, *, device: str, name: str, args: dict[str, object] | None = None) -> int | None:
         if self._worker is None:
@@ -325,6 +384,9 @@ class GuiController(QtCore.QObject):
         self._discovery_retry_timer.stop()
         self._discovery_command_id = None
         self._set_discovery_state("idle")
+        self._recording_active = False
+        self._recording_path = None
+        self.recording_state_changed.emit(False, "")
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(250)
@@ -369,6 +431,21 @@ class GuiController(QtCore.QObject):
                 self._discovery_state != "ready"
             ):
                 self.status_message.emit("device describe not accepted yet; retrying")
+
+    @QtCore.Slot(bool, str)
+    def _on_recording_state_changed(self, active: bool, record_path: str) -> None:
+        was_active = self._recording_active
+        previous_path = self._recording_path
+        self._recording_active = active
+        self._recording_path = record_path or None
+        self.recording_state_changed.emit(active, record_path)
+        if active and record_path:
+            self.status_message.emit(f"recording to {record_path}")
+        elif was_active and not active:
+            if previous_path:
+                self.status_message.emit(f"recording stopped: saved to {previous_path}")
+            else:
+                self.status_message.emit("recording stopped")
 
     @QtCore.Slot()
     def _on_discovery_timeout(self) -> None:

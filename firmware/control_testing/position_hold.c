@@ -5,6 +5,8 @@
 #define MOTOR_STATE_BRAKE 1u
 #define MOTOR_STATE_FORWARD 2u
 #define MOTOR_STATE_REVERSE 3u
+// Temporary behavior: disable active braking for all position-hold users and coast instead.
+#define POSITION_HOLD_SETTLED_MOTOR_STATE MOTOR_STATE_COAST
 
 // Computes one PID motor command.
 PositionHoldResult position_hold_update(
@@ -23,7 +25,7 @@ PositionHoldResult position_hold_update(
 
     if (error_magnitude <= deadband_deg) {
         state->prev_error_deg = error;
-        result.motor_state = MOTOR_STATE_BRAKE;
+        result.motor_state = POSITION_HOLD_SETTLED_MOTOR_STATE;
         return result;
     }
 
@@ -59,7 +61,7 @@ PositionHoldResult position_hold_update(
         result.motor_state = MOTOR_STATE_REVERSE;
         result.motor_drive_pct = (uint8_t)(-output);
     } else {
-        result.motor_state = MOTOR_STATE_BRAKE;
+        result.motor_state = POSITION_HOLD_SETTLED_MOTOR_STATE;
     }
 
     return result;

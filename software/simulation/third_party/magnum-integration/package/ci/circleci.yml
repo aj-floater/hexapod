@@ -1,0 +1,748 @@
+version: 2.1
+
+orbs:
+  # Version 3.2.4 is the "new" uploader, but it's a 50 MB Node.js *binary* and
+  # doesn't work on ARM64 Linux (or ARM Macs, or FreeBSD for that matter) and
+  # nobody seems to care. Issues opened since Septembe 2021:
+  #   https://github.com/codecov/uploader/issues/347
+  #   https://github.com/codecov/uploader/issues/523
+  #   https://github.com/codecov/uploader/issues/849
+  # The old 1.1.1 still seems to work even though codecov got removed from pip
+  # on 2023-04-14.
+  codecov: codecov/codecov@1.1.1
+
+executors:
+  ubuntu-18_04:
+    docker:
+    - image: ubuntu:bionic-20220427
+  # As of November 7, 2025, M4 is the default, and the oldest version there is
+  # 14.3.1.
+  xcode-14_3:
+    macos:
+      xcode: 14.3.1
+  emscripten2:
+    docker:
+    # 2.0.16 is the oldest on Docker that isn't based on Debian Buster which
+    # started 404ing as of 2025-07-13. However, as usual, it doesn't work, so
+    # bumping to 2.0.26 that was known to work previously. See Corrade's
+    # package/ci/circleci.yml for more information.
+    - image: emscripten/emsdk:2.0.26
+  emscripten3:
+    docker:
+    # Making sure the version 3 is tested also.
+    - image: emscripten/emsdk:3.0.0
+  android-29:
+    machine:
+      image: android:2021.10.1
+  arm64:
+    machine:
+      image: ubuntu-2004:2023.07.1
+    resource_class: arm.medium
+
+commands:
+  install-base-linux:
+    parameters:
+      extra:
+        type: string
+        default: ""
+      sudo:
+        type: string
+        default: ""
+    steps:
+    - run:
+        # TODO when switching to the new codecov uploader, gpg and git needs to
+        #   be installed as well
+        name: Update apt and install base packages
+        # Git is needed always for cloning Corrade and Magnum
+        command: |
+          << parameters.sudo >> apt update
+          if [[ "$CMAKE_CXX_FLAGS" == *"--coverage"* ]]; then export LCOV_PACKAGES="lcov curl"; fi
+          << parameters.sudo >> apt install -y git ninja-build $LCOV_PACKAGES << parameters.extra >>
+
+  install-base-macos:
+    parameters:
+      extra:
+        type: string
+        default: ""
+    steps:
+    - run:
+        name: Install base packages
+        # As usual, homebrew takes five minutes to update and then explodes in
+        # a spectacular way. How is this acceptable?!
+        command: |
+          if [[ "$CMAKE_CXX_FLAGS" == *"--coverage"* ]]; then export LCOV_PACKAGES="lcov"; fi
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja $LCOV_PACKAGES << parameters.extra >>
+
+  install-base-android:
+    steps:
+    - run:
+        name: Create Android 29 x86 AVD
+        command: |
+          SYSTEM_IMAGES="system-images;android-29;default;x86"
+          sdkmanager "$SYSTEM_IMAGES"
+          echo "no" | avdmanager --verbose create avd -n test -k "$SYSTEM_IMAGES"
+    - run:
+        name: Launch Android emulator
+        command: |
+          emulator -avd test -delay-adb -verbose -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+        background: true
+    - run:
+        name: Update apt and install base packages
+        # Compared to Docker images this needs sudo, for some reason
+        command: |
+          sudo apt update
+          sudo apt install -y ninja-build
+
+  install-gcc-4_8:
+    steps:
+    - run:
+        name: Install GCC 4.8
+        # For some reason, CMake needs a working C compiler, so provice CC as
+        # well for the case when default gcc isn't installed.
+        command: |
+          apt install -y g++-4.8
+          echo 'export CC=gcc-4.8' >> $BASH_ENV
+          echo 'export CXX=g++-4.8' >> $BASH_ENV
+
+  # While we want to make sure the project builds on GCC 4.8 as certain
+  # embedded toolchains still use it, for Clang we just pick the version
+  # available in the oldest supported distro.
+  install-clang:
+    steps:
+    - run:
+        # For some reason, CMake needs a working C compiler, so provice CC as
+        # well for the case when default gcc isn't installed.
+        #
+        # The llvm-symbolizer link needs to be set in order to have usable
+        # symbols in the output. This affects suppressions as well, meaning
+        # they won't work if the symbols are not resolvable. It's not enough to
+        # just `export ASAN_SYMBOLIZER_PATH=/usr/bin/llvm-symbolizer-6.0`
+        # because it then complains that
+        #
+        #   External symbolizer path is set to '/usr/bin/llvm-symbolizer-6.0'
+        #   which isn't a known symbolizer. Please set the path to the
+        #   llvm-symbolizer binary or other known tool.
+        #
+        # Probably because because it detects tool type based on the filename?
+        # Ugh.
+        name: Install Clang
+        command: |
+          apt install -y clang
+          echo 'export CC=clang' >> $BASH_ENV
+          echo 'export CXX=clang++' >> $BASH_ENV
+          ls -l /usr/bin/llvm-symbolizer-6.0
+          ln -s /usr/bin/llvm-symbolizer{-6.0,}
+
+  install-cmake:
+    parameters:
+      version:
+        type: string
+      suffix:
+        type: string
+        default: Linux
+      sudo:
+        type: string
+        default: ""
+    steps:
+    - run:
+        name: Install CMake << parameters.version >>
+        command: |
+          version_short=<< parameters.version >>
+          version_short="${version_short%.*}"
+          << parameters.sudo >> apt install -y wget
+          mkdir -p $HOME/cmake && cd $HOME/cmake
+          wget -nc --no-check-certificate https://cmake.org/files/v$version_short/cmake-<< parameters.version >>-<< parameters.suffix >>-x86_64.tar.gz
+          tar --strip-components=1 -xzf cmake-<< parameters.version >>-<< parameters.suffix >>-x86_64.tar.gz
+          echo 'export PATH=$HOME/cmake/bin:$PATH' >> $BASH_ENV
+          source $BASH_ENV
+          cmake --version | grep << parameters.version >>
+          ctest --version | grep << parameters.version >>
+
+  install-nodejs:
+    parameters:
+      version:
+        type: string
+        default: "18"
+    steps:
+    - run:
+        name: Install Node.js << parameters.version >>
+        # cd'ing to the home directory as otherwise it'd download into
+        # /root/project and a checkout would then fail because it's not empty.
+        # Also emsdk forces the PATH to prefer its own nodejs, so explicitly
+        # call /usr/bin/node.
+        command: |
+          cd ~
+          curl -fsSL https://deb.nodesource.com/setup_<< parameters.version >>.x -o nodesource_setup.sh
+          bash nodesource_setup.sh
+          apt-get install -y nodejs
+          /usr/bin/node -v
+
+  install-swiftshader-gles:
+    parameters:
+      build:
+        type: string
+    steps:
+    - run:
+        name: Install SwiftShader GLES
+        # Zip from https://github.com/mosra/magnum-ci/tree/swiftshader and
+        # self-hosted because GH Actions would make it too simple for people if
+        # you could just download the artifacts directly, right? RIGHT?
+        command: |
+          mkdir -p $HOME/swiftshader && cd $HOME/swiftshader
+          wget https://ci.magnum.graphics/swiftshader-gles-r5904.14dcbed947-<< parameters.build >>.zip
+          unzip swiftshader-gles-r5904.14dcbed947-<< parameters.build >>.zip
+
+  install-imgui:
+    steps:
+    - run:
+        name: Install ImGui
+        command: |
+          export IMGUI_VERSION=v1.88
+          mkdir -p $HOME/imgui && cd $HOME/imgui
+          wget --no-check-certificate https://github.com/ocornut/imgui/archive/$IMGUI_VERSION.tar.gz
+          tar --strip-components=1 -xzf $IMGUI_VERSION.tar.gz
+
+  install-glm:
+    steps:
+    - run:
+        name: Install GLM
+        command: |
+          export GLM_VERSION=0.9.9.0
+          mkdir -p $HOME/glm && cd $HOME/glm
+          wget --no-check-certificate https://github.com/g-truc/glm/archive/$GLM_VERSION.tar.gz
+          tar --strip-components=1 -xzf $GLM_VERSION.tar.gz
+
+  install-eigen:
+    steps:
+    - run:
+        name: Install Eigen
+        # Version 3.3.7 doesn't compile with Clang 11+ (such as is used by
+        # Android NDK r22), a fix was made in https://gitlab.com/libeigen/eigen/-/commit/f55a6d051bbc30d37aff6d8f9725cdd5934bffe0
+        # which got released as 3.3.8.
+        command: |
+          export EIGEN_VERSION=3.3.8
+          mkdir -p $HOME/eigen && cd $HOME/eigen
+          wget --no-check-certificate https://gitlab.com/libeigen/eigen/-/archive/$EIGEN_VERSION/eigen-$EIGEN_VERSION.tar.gz
+          tar --strip-components=1 -xzf eigen-$EIGEN_VERSION.tar.gz
+
+  install-yoga:
+    parameters:
+      version:
+        type: string
+    steps:
+    - run:
+        name: Install Yoga
+        command: |
+          mkdir -p $HOME/yoga && cd $HOME/yoga
+          wget --no-check-certificate https://github.com/facebook/yoga/archive/refs/tags/v<< parameters.version >>.tar.gz
+          tar --strip-components=1 -xzf v<< parameters.version >>.tar.gz
+          # Exclude tests (which cause the whole of Google test installed,
+          # ffs!!) by making the CMakeLists empty
+          echo > tests/CMakeLists.txt
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_INSTALL_PREFIX=$HOME/deps \
+            -G Ninja
+          ninja install
+
+  build:
+    parameters:
+      script:
+        type: string
+    steps:
+    - checkout
+    - run:
+        name: Build & test
+        command: |
+          if [ "$BUILD_STATIC" != "ON" ]; then export BUILD_STATIC=OFF; fi
+          if [ "$BUILD_DEPRECATED" != "OFF" ]; then export BUILD_DEPRECATED=ON; fi
+          if [ "$TARGET_EGL" != "ON" ]; then export TARGET_EGL=OFF; fi
+          if [ "$WITH_DART" != "OFF" ]; then export WITH_DART=ON; fi
+          ./package/ci/<< parameters.script >>
+
+  lcov:
+    parameters:
+      extra:
+        type: string
+        default: ""
+    steps:
+    - run:
+        name: Collect code coverage
+        # Keep in sync with PKBUILD-coverage, appveyor-desktop.bat and
+        # appveyor-desktop-mingw.bat, please
+        command: |
+          lcov << parameters.extra >> --directory . --capture --output-file coverage.info > /dev/null
+          lcov << parameters.extra >> --extract coverage.info "*/src/Magnum*/*" --output-file coverage.info > /dev/null
+          lcov << parameters.extra >> --remove coverage.info "*/Test/*" --output-file coverage.info > /dev/null
+    # Official docs say "token not needed for public repos", in reality not
+    # using the token is "extremely flakey". What's best is that if the upload
+    # fails, the damn thing exits with a success error code, and nobody cares:
+    # https://github.com/codecov/codecov-circleci-orb/issues/139
+    # https://community.codecov.com/t/commit-sha-does-not-match-circle-build/4266
+    #
+    # Second best thing is that the codecov/upload helper takes a `token`
+    # parameter. But the token parameter is an ENVIRONMENT VARIABLE NAME!! So
+    # one just *can't* pass the token there. It got changed arbitrarily in
+    # https://github.com/codecov/codecov-circleci-orb/pull/93 "because
+    # CircleCI docs suggested so", yet all codecov docs suggest just commiting
+    # that token directly to the YML files because "it's fine". So if it's
+    # fine, why do I have to suffer like this?!
+    - run:
+        name: Set codecov upload token because everything is a dumpster fire
+        # An icing on the cake is that CircleCI commands don't allow setting
+        # `environment` for `commands`, only for `jobs`, so I have to do that
+        # via bash, and because the environment isn't passsed from a run to
+        # run, use the BASH_ENV hack. Mmm. Technology.
+        command: |
+          echo 'export CODECOV_TOKEN=c2ea9495-5454-4294-a51d-4cadf575b325' >> "$BASH_ENV"
+    - codecov/upload:
+        file: coverage.info
+
+jobs:
+  linux-gl:
+    executor: ubuntu-18_04
+    environment:
+      CMAKE_CXX_FLAGS: --coverage
+      CONFIGURATION: Debug
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_EGL: "ON"
+      # DART was disabled on Ubuntu 16.04 because of GCC 4 and 5 ABI mismatch
+      # on 16.04: https://github.com/dartsim/dart/issues/967#issuecomment-469075835
+      # TODO: investigate and re-enable on 18.04
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+ and C++17 to build
+      WITH_YOGA: "OFF"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget
+    - install-gcc-4_8
+    - install-cmake:
+        version: "3.5.2"
+    - install-imgui
+    - build:
+        script: unix-desktop.sh
+    - lcov:
+        extra: --gcov-tool /usr/bin/gcov-4.8
+
+  linux-arm64:
+    executor: arm64
+    environment:
+      CMAKE_CXX_FLAGS: --coverage
+      CONFIGURATION: Debug
+      # The ARM64 job is a machine job, not a VM, which means running GL tests
+      # will get more expensive. But it's a newer Ubuntu version, meaning it
+      # could provide better coverage than the base job, so enabling EGL to run
+      # the tests. OTOH, the TSan job has them disabled, so the GLX code paths
+      # are tested there. (Also STUPID yml interprets unquoted ON as a
+      # boolean.)
+      # TODO switch to OFF when the main job is upgraded to a newer OS version
+      TARGET_EGL: "ON"
+      # DART disabled here because it's just way too huge and annoying
+      WITH_DART: "OFF"
+      WITH_YOGA: "ON"
+    steps:
+    # Not installing the old GCC 4.8 and CMake 3.5 to speed up. These are
+    # tested more than enough on other jobs. SDL needed for some snippets.
+    # Machine executors need sudo.
+    - install-base-linux:
+        extra: gcc cmake libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget
+        sudo: sudo
+    - install-imgui
+    - install-yoga:
+        # Version 3 requires C++20, and is tested in Mac and Emscripten jobs.
+        # Want to ensure compatibility with pre-C++20 compilers as well.
+        version: "2.0.1"
+    - build:
+        script: unix-desktop.sh
+    - lcov
+
+  linux-gles2:
+    executor: ubuntu-18_04
+    environment:
+      CMAKE_CXX_FLAGS: --coverage
+      CONFIGURATION: Debug
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_GLES2: "ON"
+      # Disabled due to GCC 4/5 ABI mismatch, see above
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+ and C++17 to build
+      WITH_YOGA: "OFF"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget unzip
+    - install-gcc-4_8
+    - install-cmake:
+        version: "3.5.2"
+    - install-imgui
+    - build:
+        script: unix-desktop-gles.sh
+    - lcov:
+        extra: --gcov-tool /usr/bin/gcov-4.8
+
+  linux-gles3:
+    executor: ubuntu-18_04
+    environment:
+      CMAKE_CXX_FLAGS: --coverage
+      CONFIGURATION: Debug
+      # STUPID yml interprets unquoted OFF as a boolean
+      TARGET_GLES2: "OFF"
+      # Disabled due to GCC 4/5 ABI mismatch, see above
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+ and C++17 to build
+      WITH_YOGA: "OFF"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget unzip
+    - install-gcc-4_8
+    - install-cmake:
+        version: "3.5.2"
+    - install-imgui
+    - build:
+        script: unix-desktop-gles.sh
+    - lcov:
+        extra: --gcov-tool /usr/bin/gcov-4.8
+
+  linux-static:
+    executor: ubuntu-18_04
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      BUILD_STATIC: "ON"
+      CMAKE_CXX_FLAGS: --coverage
+      CONFIGURATION: Debug
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_EGL: "ON"
+      # Disabled due to GCC 4/5 ABI mismatch, see above
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+ and C++17 to build
+      WITH_YOGA: "OFF"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget
+    - install-gcc-4_8
+    - install-cmake:
+        version: "3.5.2"
+    - install-imgui
+    # No Yoga, as version 2.0.1 is C++11 but requires a too new CMake
+    - build:
+        script: unix-desktop.sh
+    - lcov:
+        extra: --gcov-tool /usr/bin/gcov-4.8
+
+  linux-nondeprecated:
+    executor: ubuntu-18_04
+    environment:
+      # STUPID yml interprets unquoted OFF as a boolean
+      BUILD_DEPRECATED: "OFF"
+      CMAKE_CXX_FLAGS: -DCORRADE_NO_ASSERT
+      CONFIGURATION: Release
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_EGL: "ON"
+      # Disabled due to GCC 4/5 ABI mismatch, see above
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+ and C++17 to build
+      WITH_YOGA: "OFF"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget
+    - install-gcc-4_8
+    - install-cmake:
+        version: "3.5.2"
+    - install-imgui
+    # No Yoga, as version 2.0.1 is C++11 but requires a too new CMake
+    - build:
+        script: unix-desktop.sh
+
+  linux-sanitizers:
+    executor: ubuntu-18_04
+    environment:
+      CMAKE_CXX_FLAGS: -fsanitize=address
+      CONFIGURATION: Debug
+      # llvmpipe on Mesa 20 on 18.04 seems to be leaking somewhere, reporting
+      # two 56 byte leaks from calloc in <unknown module>, so not suppressible
+      # in any way. Not reproducible with Mesa 25 Intel, Mesa 25 llvmpipe has
+      # random GLX leaks, so I guess the driver is just in a perpetual state of
+      # disrepair. (Also STUPID yml interprets unquoted OFF as a boolean.)
+      # TODO retry when upgrading to a newer OS version or when that PR is
+      #   merged
+      TARGET_EGL: "OFF"
+      # Disabled due to GCC 4/5 ABI mismatch, see above
+      WITH_DART: "OFF"
+      # Yoga requires CMake 3.13+, but it's more important to have it tested
+      # for leaks than have ensure the sanitizer builds run with 3.5.
+      WITH_YOGA: "ON"
+    steps:
+    # libidn11 needed by CMake. SDL needed for some snippets.
+    - install-base-linux:
+        extra: libidn11 libgl1-mesa-dev libsdl2-dev libglfw3-dev libbullet-dev libeigen3-dev libglm-dev wget
+    - install-clang
+    - install-cmake:
+        # 3.13 needed by Yoga. Additionally, Yoga 2 wants C++17, which should
+        # be supported by Clang that's used here (as opposed to GCC 4.8 used
+        # elsewhere).
+        version: "3.13.5"
+    - install-imgui
+    - install-yoga:
+        # Version 3 requires C++20
+        version: "2.0.1"
+    - build:
+        script: unix-desktop.sh
+
+  macos-gl:
+    executor: xcode-14_3
+    environment:
+      # Make libc++ remove transitive includes, both for faster build times and
+      # to detect if we're missing a transitive include. Works with libc++ 16+,
+      # which is used by Xcode 15 (i.e., will get used on the next CircleCI
+      # executor update).
+      CMAKE_CXX_FLAGS: --coverage -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+      CONFIGURATION: Debug
+      WITH_YOGA: "ON"
+    steps:
+    - install-base-macos:
+        extra: sdl2 glfw bullet eigen glm dartsim wget
+    - install-imgui
+    - install-yoga:
+        # Version 3 requires C++20, unfortunately the current oldest image is
+        # missing std::bit_cast for it to work. Fuck off, Meta, with such
+        # insane toolchain requirements.
+        # TODO try again when it gets bumped to newer
+        version: "2.0.1"
+    - build:
+        script: unix-desktop.sh
+    # The 14.3 image seems to have the new lcov, which is very picky and throws
+    # errors about a ton of little things, 14.0.1 and older didn't
+    - lcov:
+        extra: --ignore-errors inconsistent,gcov
+
+  macos-gles3:
+    executor: xcode-14_3
+    environment:
+      # Make libc++ remove transitive includes, both for faster build times and
+      # to detect if we're missing a transitive include. Works with libc++ 16+,
+      # which is used by Xcode 15 (i.e., will get used on the next CircleCI
+      # executor update).
+      CMAKE_CXX_FLAGS: --coverage -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+      CONFIGURATION: Debug
+      # STUPID yml interprets unquoted OFF as a boolean
+      TARGET_GLES2: "OFF"
+      WITH_YOGA: "ON"
+    steps:
+    - install-base-macos:
+        extra: sdl2 glfw bullet eigen glm wget
+    - install-swiftshader-gles:
+        build: macos12-arm64
+    - install-imgui
+    - install-yoga:
+        # Version 3 requires C++20, unfortunately the current oldest image is
+        # missing std::bit_cast for it to work. Fuck off, Meta, with such
+        # insane toolchain requirements.
+        # TODO try again when it gets bumped to newer
+        version: "2.0.1"
+    - build:
+        script: unix-desktop-gles.sh
+    # The 14.3 image seems to have the new lcov, which is very picky and throws
+    # errors about a ton of little things, 14.0.1 and older didn't
+    - lcov:
+        extra: --ignore-errors inconsistent,gcov
+
+  macos-static:
+    executor: xcode-14_3
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      BUILD_STATIC: "ON"
+      # Make libc++ remove transitive includes, both for faster build times and
+      # to detect if we're missing a transitive include. Works with libc++ 16+,
+      # which is used by Xcode 15 (i.e., will get used on the next CircleCI
+      # executor update).
+      CMAKE_CXX_FLAGS: --coverage -D_LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+      CONFIGURATION: Debug
+      WITH_YOGA: "ON"
+    steps:
+    - install-base-macos:
+        extra: sdl2 glfw bullet eigen glm dartsim wget
+    - install-imgui
+    - install-yoga:
+        # Version 3 requires C++20, unfortunately the current oldest image is
+        # missing std::bit_cast for it to work. Fuck off, Meta, with such
+        # insane toolchain requirements.
+        # TODO try again when it gets bumped to newer
+        version: "2.0.1"
+    - build:
+        script: unix-desktop.sh
+    # The 14.3 image seems to have the new lcov, which is very picky and throws
+    # errors about a ton of little things, 14.0.1 and older didn't
+    - lcov:
+        extra: --ignore-errors inconsistent,gcov
+
+  emscripten-webgl1:
+    executor: emscripten2
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_GLES2: "ON"
+      # Bullet is compiled directly here instead
+      USE_EMSCRIPTEN_PORTS: "OFF"
+    steps:
+    - install-base-linux
+    - install-imgui
+    - install-glm
+    - install-eigen
+    - build:
+        script: emscripten.sh
+
+  emscripten-webgl2:
+    executor: emscripten3
+    environment:
+      # STUPID yml interprets unquoted OFF as a boolean
+      TARGET_GLES2: "OFF"
+      # emsdk forces the PATH to prefer its own nodejs, so explicitly force
+      # /usr/bin/node to be used by CMake
+      EXTRA_OPTS: >
+        -DNODEJS_EXECUTABLE=/usr/bin/node
+      # Get Bullet from Emscripten Ports. Done only in one of the two builds to
+      # ensure there's nothing that would make the build without to fail.
+      USE_EMSCRIPTEN_PORTS: "ON"
+    steps:
+    - install-base-linux:
+        extra: curl
+    - install-nodejs
+    - install-imgui
+    - install-glm
+    - install-eigen
+    - install-yoga:
+        # Version 3 requires C++20, unfortunately on Emscripten it fails due to
+        # missing <concept>. Fuck off, Meta, with such insane toolchain
+        # requirements.
+        version: "2.0.1"
+    - build:
+        script: emscripten.sh
+
+  android-x86-gles2:
+    executor: android-29
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_GLES2: "ON"
+    steps:
+    - install-base-android
+    # CMake older than 3.20 doesn't work with NDK r22+ which removed some
+    # deprecated paths. NDK r21 is only on deprecated CircleCI Android images
+    # now.
+    - install-cmake:
+        version: "3.20.6"
+        suffix: linux
+        sudo: sudo
+    - install-imgui
+    - install-glm
+    - install-eigen
+    - build:
+        script: android-x86-gles.sh
+
+  android-x86-gles3:
+    executor: android-29
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_GLES2: "OFF"
+    steps:
+    - install-base-android
+    # CMake older than 3.20 doesn't work with NDK r22+ which removed some
+    # deprecated paths. NDK r21 is only on deprecated CircleCI Android images
+    # now.
+    - install-cmake:
+        version: "3.20.6"
+        suffix: linux
+        sudo: sudo
+    - install-imgui
+    - install-glm
+    - install-eigen
+    - install-yoga:
+        # Version 3 requires C++20, and is tested in Mac jobs. Not sure what
+        # Android has, and want to ensure compatibility with pre-C++20
+        # compilers as well.
+        version: "2.0.1"
+    - build:
+        script: android-x86-gles.sh
+
+  ios-gles3:
+    executor: xcode-14_3
+    environment:
+      # STUPID yml interprets unquoted ON as a boolean
+      TARGET_GLES2: "OFF"
+      # Yep, xcodebuild is beyond stupid and just DOESN'T build in parallel by
+      # default. The default M4 medium resource class has 6 CPUs and Ninja uses
+      # -j8, so do the same for xcodebuild.
+      XCODE_JOBS: 8
+    steps:
+    - install-base-macos:
+        extra: xcbeautify wget
+    - install-imgui
+    - install-glm
+    - install-eigen
+    - build:
+        script: ios-simulator-gles.sh
+
+workflows:
+  version: 2
+  build:
+    # While there's no actual execution or data dependency between the jobs,
+    # this is done in order to reduce unnecessary credit usage. The GL and
+    # non-deprecated Linux builds are taken as the main sanity checks. Only if
+    # they pass, the rest of the jobs gets gradually executed, with further
+    # dependencies especially for the macOS jobs that take the most credits.
+    jobs:
+    - linux-gl
+    - linux-nondeprecated
+    - linux-arm64:
+        requires:
+        - linux-gl
+        - linux-nondeprecated
+    - linux-gles2:
+        requires:
+        - linux-gl
+        - linux-nondeprecated
+    - linux-gles3:
+        requires:
+        - linux-gl
+        - linux-nondeprecated
+    - linux-static:
+        requires:
+        - linux-gl
+        - linux-nondeprecated
+    - linux-sanitizers:
+        requires:
+        - linux-gl
+        - linux-nondeprecated
+    - macos-gl:
+        requires:
+        - linux-arm64
+        - linux-gl
+        - linux-nondeprecated
+    - macos-gles3:
+        requires:
+        - linux-gles3
+        - macos-gl
+    - macos-static:
+        requires:
+        - linux-static
+        - macos-gl
+    - emscripten-webgl1:
+        requires:
+        - linux-gles2
+    - emscripten-webgl2:
+        requires:
+        - linux-gles3
+    - android-x86-gles2:
+        requires:
+        - linux-gles2
+        - linux-arm64
+    - android-x86-gles3:
+        requires:
+        - linux-gles3
+        - linux-arm64
+    - ios-gles3:
+        requires:
+        - macos-gles3
