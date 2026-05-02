@@ -11,9 +11,8 @@ These notes capture the current agreed plan for the basic leg only.
 
 ## Shared Geometry
 
-Source of truth:
-
-- `../../docs/report/tools/leg_kinematics.py`
+Use the DH model values listed below as the shared geometric reference for the
+basic-leg comparison work.
 
 Shared DH model values:
 
