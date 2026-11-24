@@ -27,7 +27,7 @@ def ev(expr):
     """Evaluate a Params expression numerically (for initial geometry)."""
     P = bd.getObject("Params")
     s = re.sub(r"Params\.(\w+)", lambda m: repr(float(getattr(P, m.group(1)))), expr)
-    return float(eval(s))
+    return float(eval(s, {"sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "pi": math.pi}))
 
 
 def cname(sk, c, name, expr=None):
@@ -87,6 +87,28 @@ def add_leg_rect(sk, leg, s_near, s_far, width, sfx=""):
     sk.addConstraint(C("Parallel", L[1], gD))
     sk.addConstraint(C("Perpendicular", L[0], gD))
     sk.addConstraint(C("Symmetric", L[0], 1, L[0], 2, gM, 1))
+
+
+def add_leg_poly(sk, leg, pts, sfx=""):
+    """Closed polygon in a leg's frame. pts = [(s_expr, t_expr), ...]: s inward of the yaw axis, t sideways.
+    Each vertex is fixed by DistanceX/DistanceY expressions from the sketch origin (fully constrained)."""
+    n, xe, ye, ae = leg
+    tag = "%s_%s%s" % (sk.Name[:6], n, sfx)
+    a = math.radians(ev(ae)); ca, sa = math.cos(a), math.sin(a)
+    ax, ay = (ev(xe) if xe != "0" else 0.0), ev(ye)
+    ang = "((%s) * 1 deg)" % ae
+    P, X = [], []
+    for s, t in pts:
+        sv, tv = ev(s), ev(t)
+        P.append(V(ax + sv * ca - tv * sa, ay + sv * sa + tv * ca, 0))
+        X.append(("(%s) + (%s) * cos%s - (%s) * sin%s" % (xe, s, ang, t, ang),
+                  "(%s) + (%s) * sin%s + (%s) * cos%s" % (ye, s, ang, t, ang)))
+    k = len(P)
+    L = [sk.addGeometry(Part.LineSegment(P[i], P[(i + 1) % k])) for i in range(k)]
+    for i in range(k):
+        sk.addConstraint(C("Coincident", L[i], 2, L[(i + 1) % k], 1))
+        cname(sk, C("DistanceX", -1, 1, L[i], 1, P[i].x), "%s_x%d" % (tag, i), X[i][0])
+        cname(sk, C("DistanceY", -1, 1, L[i], 1, P[i].y), "%s_y%d" % (tag, i), X[i][1])
 
 
 def add_leg_circles(sk, leg, s, t, d, sfx=""):
