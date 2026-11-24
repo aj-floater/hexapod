@@ -1,5 +1,7 @@
 # Body geometry: hand-back to the body PCB layout and body IK
 
+> ⚠️ **Superseded (2026-11-24).** This describes v0.2 (Option A with tray sockets). `Body.FCStd` is now v0.3, the "slot body" (legs at (0, ±45) / (±55, ±28), holders in side slots with ears, PCB at Z 25.8). That work is in progress; see `hardware/CAD/BODY_CAD_STATUS.md`. This file and `body_pcb_outline.dxf` still need refreshing for v0.3.
+
 > **Status:** DRAFT v0.2, 2026-11-24. Compact body (Option A), from `hardware/CAD/Body.FCStd` (FreeCAD 1.1.1). For discussion; not signed off.
 > Inputs: `BODY_CAD_HANDOFF.md`, *Update 01* (narrow and low stance, light body), Archie's sketches (angular top view, flattened-diamond section) and `draft.step` (the leg socket connection).
 > Replaces v0.1 (plate body) and the "sandwich v2" design (archived as `hardware/CAD/Body_v2_sandwich.FCStd`).

@@ -1,4 +1,4 @@
-# body_measure.py - FreeCAD macro for Body.FCStd (compact body, Option A)
+# body_measure.py - FreeCAD macro for Body.FCStd (slot body: holders in side slots, fixed by ears)
 # Prints the numbers the body PCB layout and the body IK need: leg mount table,
 # leg connector positions and harness lengths, plus key heights.
 # Usage (FreeCAD Python console, with Body.FCStd open):
@@ -15,9 +15,8 @@ bd.getObject("BodyAssembly").solve()
 
 PCB_TOP = P.pcb_z + P.pcb_t
 CONN_TOP = PCB_TOP + 10.0            # mated JST-XH plug top, where the wires leave
-NOTCH_Z = P.split_z + P.notch_h / 2  # harness passes the top-shell notch here
+EXIT_T = P.ear_t0 + P.clr + P.top_t + 2.0   # run beside the servo column, inside the sweep opening
 CLIP_Z = 40.0                        # strain-relief clip above the coxa horn (horn top z = 36.6)
-RISE_IN = 3.5                        # rise outside the wall, between wall and coxa servo (servo at 15.75 from axis)
 YAW_LOOP = 2 * math.pi * 10 * (60 / 360.0)     # r = 10 slack loop for +-30 deg coxa yaw
 FEMUR_LOOP = 2 * math.pi * 10 * (100 / 360.0)  # r = 10 loop for ~100 deg femur travel
 TERMINATIONS = 2 * 10.0
@@ -43,9 +42,8 @@ for leg in ["FL", "ML", "RL", "FR", "MR", "RR"]:
     j = bd.getObject("J_" + leg).Placement.Base
     pts = [
         App.Vector(j.x, j.y, CONN_TOP),
-        L.multVec(App.Vector(-(P.hold_face - 1), 0, NOTCH_Z)),        # out through the top-shell notch
-        L.multVec(App.Vector(-(P.hold_face - RISE_IN), 0, NOTCH_Z)),
-        L.multVec(App.Vector(-(P.hold_face - RISE_IN), 0, CLIP_Z)),   # rise outside the wall
+        L.multVec(App.Vector(-P.jst_s, EXIT_T, CONN_TOP)),            # step beside the servo column
+        L.multVec(App.Vector(-(P.sweep_s - 1), EXIT_T, CLIP_Z)),      # out and up through the sweep opening
         L.multVec(App.Vector(0, 0, CLIP_Z)),                          # yaw-axis clip (slack loop)
         L.multVec(femur_frame.Base),                                  # cross the femur joint at its axis
         L.multVec(j4_t),                                              # leg board J4
@@ -56,5 +54,5 @@ for leg in ["FL", "ML", "RL", "FR", "MR", "RR"]:
     print("%s | (%.2f, %.2f) | %.0f | (%.1f, %.1f) | %.0f | %d | (%.1f, %.1f, %.1f)"
           % (leg, L.Base.x, L.Base.y, yaw_deg(L), j.x, j.y, routed, cut, foot.x, foot.y, foot.z))
 
-print("Heights: tray underside %.1f, PCB %.1f-%.1f, top %.1f; foot tip z %.1f (ground clearance %.1f mm)"
-      % (P.z_bot, P.pcb_z, PCB_TOP, P.top_z, tip_t.z, P.z_bot - tip_t.z))
+print("Heights: tray underside %.1f, split %.1f, PCB %.1f-%.1f, top %.1f; foot tip z %.1f (ground clearance %.1f mm)"
+      % (P.z_bot, P.split_z, P.pcb_z, PCB_TOP, P.top_z, tip_t.z, P.z_bot - tip_t.z))
